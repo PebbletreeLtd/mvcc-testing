@@ -12,27 +12,27 @@ export type Tombstone = typeof TOMBSTONE;
  * `value` is either the real value or `TOMBSTONE` if the key was cleared.
  */
 export interface VersionedEntry<V> {
-  version: number;
-  value: V | Tombstone;
+    version: number;
+    value: V | Tombstone;
 }
 
 /**
  * Options accepted by `MVCCStore.doTransaction`.
  */
 export interface TransactionOptions {
-  /**
-   * Maximum number of times the transaction callback will be re-executed
-   * after a conflict before giving up and throwing a `ConflictError`.
-   * Defaults to 5.
-   */
-  maxRetries?: number;
+    /**
+     * Maximum number of times the transaction callback will be re-executed
+     * after a conflict before giving up and throwing a `ConflictError`.
+     * Defaults to 5.
+     */
+    maxRetries?: number;
 
-  /**
-   * When `true` (the default), reads within a transaction see uncommitted
-   * writes made earlier in the same transaction.  Set to `false` to always
-   * read from the snapshot, ignoring the local write buffer.
-   */
-  readYourOwnWrites?: boolean;
+    /**
+     * When `true` (the default), reads within a transaction see uncommitted
+     * writes made earlier in the same transaction.  Set to `false` to always
+     * read from the snapshot, ignoring the local write buffer.
+     */
+    readYourOwnWrites?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -44,9 +44,9 @@ export interface TransactionOptions {
  * at any version after the transaction's snapshot.
  */
 export interface KeyReadOperation {
-  type: "read";
-  /** Serialised key string. */
-  key: string;
+    type: "read";
+    /** Serialised key string. */
+    key: string;
 }
 
 /**
@@ -58,11 +58,11 @@ export interface KeyReadOperation {
  * or removed from the result set.
  */
 export interface FilterReadOperation<K, V> {
-  type: "filterRead";
-  /** The filter callback supplied by the caller. */
-  filter: (key: K, value: V) => boolean;
-  /** Serialised keys that matched the filter at snapshot time. */
-  matchedKeys: Set<string>;
+    type: "filterRead";
+    /** The filter callback supplied by the caller. */
+    filter: (key: K, value: V) => boolean;
+    /** Serialised keys that matched the filter at snapshot time. */
+    matchedKeys: Set<string>;
 }
 
 /**
@@ -80,8 +80,8 @@ export type ReadOperation<K, V> = KeyReadOperation | FilterReadOperation<K, V>;
  * automatic retries have been exhausted.
  */
 export class ConflictError extends Error {
-  constructor(message?: string) {
-    super(message ?? "Transaction conflict: maximum retries exceeded");
-    this.name = "ConflictError";
-  }
+    constructor(message?: string) {
+        super(message ?? "Transaction conflict: maximum retries exceeded");
+        this.name = "ConflictError";
+    }
 }
