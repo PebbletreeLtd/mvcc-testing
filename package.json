@@ -1,0 +1,44 @@
+{
+  "name": "@pebbletree/mvcc-testing",
+  "version": "1.0.0",
+  "description": "In-memory MVCC transactional key/value store with snapshot isolation, optimistic conflict detection, and automatic retries — inspired by FoundationDB",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "prepublishOnly": "npm test && npm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PebbletreeLtd/mvcc-testing.git"
+  },
+  "keywords": [
+    "mvcc",
+    "transaction",
+    "transactional",
+    "key-value",
+    "in-memory",
+    "snapshot-isolation",
+    "optimistic-concurrency",
+    "conflict-detection",
+    "foundationdb",
+    "testing",
+    "integration-testing",
+    "data-store"
+  ],
+  "author": "pebbletree",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/PebbletreeLtd/mvcc-testing/issues"
+  },
+  "homepage": "https://github.com/PebbletreeLtd/mvcc-testing#readme",
+  "dependencies": {
+    "json-stable-stringify": "~1.3.0"
+  },
+  "devDependencies": {
+    "@types/json-stable-stringify": "~1.2.0",
+    "typescript": "~5.9.3",
+    "vitest": "~1.6.1"
+  }
+}
