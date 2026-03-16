@@ -119,6 +119,16 @@ export class MVCCStore<K, V> {
     }
 
     /**
+     * Alias for {@link doTransaction}.
+     */
+    doTn<R>(
+        callback: (txn: Transaction<K, V>) => Promise<R>,
+        options?: TransactionOptions,
+    ): Promise<R> {
+        return this.doTransaction(callback, options);
+    }
+
+    /**
      * Return the current commit version (useful for diagnostics / testing).
      */
     get version(): number {
