@@ -81,7 +81,7 @@ Buffer a write. The value is not visible to other transactions until the transac
 
 Mark a key as deleted. After commit, `get` will return `undefined` for this key.
 
-#### `txn.getUsingFilter(filter: (key: K, value: V) => boolean): { key: K; value: V }[]`
+#### `txn.getUsingFilter(filter: (key: K, value: V) => boolean): [K, V][]`
 
 Scan every live key/value pair in the store and return all entries where `filter` returns `true`. This is the equivalent of a table scan with a predicate.
 
@@ -91,9 +91,10 @@ Scan every live key/value pair in the store and return all entries where `filter
 - A **filter read** is recorded with the filter callback and the set of matched keys. At commit time the filter is re-evaluated against the current store to detect keys that were **added to** or **removed from** the result set by concurrent transactions.
 
 ```ts
-const users = await store.doTransaction(async (txn) => {
+const admins = await store.doTransaction(async (txn) => {
   return txn.getUsingFilter((_key, val) => val.role === "admin");
 });
+// admins is [[key1, val1], [key2, val2], ...]
 ```
 
 ---

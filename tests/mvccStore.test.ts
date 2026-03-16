@@ -389,7 +389,7 @@ describe("getUsingFilter", () => {
         });
 
         expect(result).toHaveLength(2);
-        const names = result.map((r) => r.value.name).sort();
+        const names = result.map(([_k, v]) => v.name).sort();
         expect(names).toEqual(["Alice", "Charlie"]);
     });
 
@@ -422,7 +422,7 @@ describe("getUsingFilter", () => {
         });
 
         expect(result).toHaveLength(1);
-        expect(result[0]!.value.name).toBe("Bob");
+        expect(result[0]![1].name).toBe("Bob");
     });
 
     it("conflicts when a new matching row is added by another transaction", async () => {

@@ -92,8 +92,8 @@ export class Transaction<K, V> {
      */
     getUsingFilter(
         filter: (key: K, value: V) => boolean,
-    ): { key: K; value: V }[] {
-        const results: { key: K; value: V }[] = [];
+    ): [K, V][] {
+        const results: [K, V][] = [];
         const matchedKeys = new Set<string>();
 
         // Iterate every known serialised key in the store.
@@ -107,7 +107,7 @@ export class Transaction<K, V> {
             const key = this.deserialize(serialisedKey);
             if (filter(key, value)) {
                 matchedKeys.add(serialisedKey);
-                results.push({ key, value });
+                results.push([key, value]);
 
                 // Record an individual read for conflict detection on value changes.
                 this._readOperations.push({ type: "read", key: serialisedKey });
@@ -128,7 +128,7 @@ export class Transaction<K, V> {
             }
             const key = this.deserialize(serialisedKey);
             if (filter(key, buffered as V)) {
-                results.push({ key, value: buffered as V });
+                results.push([key, buffered as V]);
                 // No individual read recorded here — these are uncommitted local
                 // writes, not store reads.
             }
