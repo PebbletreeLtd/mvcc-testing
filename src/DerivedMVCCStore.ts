@@ -7,52 +7,52 @@ import {
     type Transformer,
 } from "./types";
 
+/** Singleton empty buffer written as the value for every derived entry. */
+const EMPTY_BUF = Buffer.alloc(0);
+
 /**
  * A read-only, automatically-maintained secondary index (derived view) over
  * an {@link MVCCStore}.
  *
- * On every commit to the source store the `mapKey` / `mapValue` projections
- * are applied and the results written into this store's own `versionMap`.
- * Reads go through the normal MVCC transaction path, so consumers get
- * snapshot isolation, conflict detection, etc. for free.
+ * On every commit to the source store the `mapKey` projection is applied and
+ * the derived key is written into this store's own `versionMap` with an
+ * empty buffer as the value.  Reads go through the normal MVCC transaction
+ * path, so consumers get snapshot isolation, conflict detection, etc. for
+ * free.
  *
  * The value-input type parameter is fixed to `never` so that `set()` is
  * uncallable at compile time.  A runtime guard in {@link doTransaction} also
  * prevents any writes that sneak past the type system (e.g. `clear`).
  *
- * @typeParam Kin  - Source store key-in type.
- * @typeParam KOut - Source store key-out type.
- * @typeParam Vin  - Source store value-in type.
- * @typeParam VOut - Source store value-out type.
- * @typeParam FK   - Derived (index) key type.
- * @typeParam FVOut - Derived (index) value type.
+ * @typeParam Kin   - Source store key-in type.
+ * @typeParam KOut  - Source store key-out type.
+ * @typeParam Vin   - Source store value-in type.
+ * @typeParam VOut  - Source store value-out type.
+ * @typeParam FKIn  - Derived (index) key-in type.
+ * @typeParam FKOut - Derived (index) key-out type (must extend FKIn).
  */
 export class DerivedMVCCStore<
     Kin,
     KOut,
     Vin,
     VOut,
-    FK,
-    FVOut,
-> extends MVCCStore<FK, FK, never, FVOut> {
+    FKIn,
+    FKOut extends FKIn,
+> extends MVCCStore<FKIn, FKOut, never, unknown> {
     private readonly _source: MVCCStore<Kin, KOut, Vin, VOut>;
-    private readonly _mapKey: (key: KOut, value: VOut) => FK;
-    private readonly _mapValue: (key: KOut, value: VOut) => FVOut;
+    private readonly _mapKey: (key: KOut, value: VOut) => FKIn;
 
     constructor(args: {
         source: MVCCStore<Kin, KOut, Vin, VOut>;
         /** Project a source key/value pair into the derived key. */
-        mapKey: (key: KOut, value: VOut) => FK;
-        /** Project a source key/value pair into the derived value. */
-        mapValue: (key: KOut, value: VOut) => FVOut;
+        mapKey: (key: KOut, value: VOut) => FKIn;
         /** Transformer for the derived key type. */
-        keyTransformer: Transformer<FK, FK>;
+        keyTransformer: Transformer<FKIn, FKOut>;
     }) {
         super({ keyTransformer: args.keyTransformer });
 
         this._source = args.source;
         this._mapKey = args.mapKey;
-        this._mapValue = args.mapValue;
 
         // Back-fill from the source store's current state.
         this._backfill();
@@ -68,13 +68,18 @@ export class DerivedMVCCStore<
     // Read-only enforcement
     // -----------------------------------------------------------------------
 
+    /** Values are always empty buffers — return an empty object. */
+    override unpackValue(_val: Buffer): unknown {
+        return {};
+    }
+
     /**
      * Overridden to enforce read-only semantics.  The `never` value-input
      * type makes `set()` uncallable, but `clear()` can still be invoked at
      * runtime.  This guard catches any such attempt.
      */
     override async doTransaction<R>(
-        callback: (txn: Transaction<FK, FK, never, FVOut>) => Promise<R>,
+        callback: (txn: Transaction<FKIn, FKOut, never, unknown>) => Promise<R>,
         options?: TransactionOptions,
     ): Promise<R> {
         return super.doTransaction(async (txn) => {
@@ -104,16 +109,14 @@ export class DerivedMVCCStore<
             const srcValue = this._decodeSourceValue(latest.value);
 
             const derivedKey = this._mapKey(srcKey, srcValue);
-            const derivedValue = this._mapValue(srcKey, srcValue);
             const derivedKeyHex = this._derivedKeyHex(derivedKey);
-            const derivedValuePacked = JSON.stringify(derivedValue);
 
             let dEntries = this.versionMap.get(derivedKeyHex);
             if (!dEntries) {
                 dEntries = [];
                 this.versionMap.set(derivedKeyHex, dEntries);
             }
-            dEntries.push({ version: latest.version, value: derivedValuePacked });
+            dEntries.push({ version: latest.version, value: EMPTY_BUF });
         }
 
         // Align our version counter with the source.
@@ -176,7 +179,6 @@ export class DerivedMVCCStore<
     ): void {
         const srcValue = this._decodeSourceValue(rawValue);
         const derivedKey = this._mapKey(srcKey, srcValue);
-        const derivedValue = this._mapValue(srcKey, srcValue);
         const derivedKeyHex = this._derivedKeyHex(derivedKey);
 
         // Check whether the derived key changed (value update that moves
@@ -191,7 +193,7 @@ export class DerivedMVCCStore<
             }
         }
 
-        this._writeEntry(derivedKeyHex, JSON.stringify(derivedValue), commitVersion);
+        this._writeEntry(derivedKeyHex, EMPTY_BUF, commitVersion);
     }
 
     // -----------------------------------------------------------------------
@@ -209,7 +211,7 @@ export class DerivedMVCCStore<
     }
 
     /** Pack a derived key to its hex string for use as a versionMap key. */
-    private _derivedKeyHex(key: FK): string {
+    private _derivedKeyHex(key: FKIn): string {
         return (this.packKey(key) as Buffer).toString("hex");
     }
 

@@ -184,11 +184,11 @@ await store.doTransaction(async (txn) => {
 
 ---
 
-### `DerivedMVCCStore<Kin, KOut, Vin, VOut, FK, FVOut>`
+### `DerivedMVCCStore<Kin, KOut, Vin, VOut, FKIn, FKOut>`
 
-A read-only, automatically-maintained secondary index (derived view) over an `MVCCStore`. Every commit to the source store is synchronously projected through `mapKey` / `mapValue` into the derived store's own version map. Reads go through the normal MVCC transaction path, so you get snapshot isolation and conflict detection for free.
+A read-only, automatically-maintained secondary index (derived view) over an `MVCCStore`. Every commit to the source store is synchronously projected through `mapKey` into the derived store's own version map with an empty value. Reads go through the normal MVCC transaction path, so you get snapshot isolation and conflict detection for free.
 
-The value-input type parameter is `never`, making `set()` uncallable at compile time. A runtime guard also prevents any writes that sneak past the type system.
+The derived store extends `MVCCStore<FKIn, FKOut, never, unknown>`. The `never` value-input type makes `set()` uncallable at compile time, and a runtime guard prevents any writes that sneak past the type system. `FKOut` must extend `FKIn`.
 
 ```ts
 import { MVCCCore } from "@pebbletree/mvcc-testing";
@@ -197,14 +197,12 @@ const { MVCCStore, DerivedMVCCStore } = MVCCCore;
 type Key = { id: number };
 type Val = { name: string; category: string };
 type IKey = { category: string };
-type IVal = { id: number; name: string };
 
 const source = new MVCCStore<Key, Key, Val, Val>({ keyTransformer: { ... } });
 
-const byCategory = new DerivedMVCCStore<Key, Key, Val, Val, IKey, IVal>({
+const byCategory = new DerivedMVCCStore<Key, Key, Val, Val, IKey, IKey>({
   source,
   mapKey: (_key, val) => ({ category: val.category }),
-  mapValue: (key, val) => ({ id: key.id, name: val.name }),
   keyTransformer: {
     pack: (k) => tuple.pack([k.category]),
     unpack: (buf) => ({ category: tuple.unpack(buf)[0] as string }),
@@ -216,10 +214,11 @@ await source.doTransaction(async (txn) => {
   txn.set({ id: 1 }, { name: "Alice", category: "admin" });
 });
 
+// Reads return the derived key; values are empty objects ({}).
 const admin = await byCategory.doTransaction(async (txn) => {
   return txn.get({ category: "admin" });
 });
-console.log(admin); // { id: 1, name: "Alice" }
+console.log(admin); // {}
 ```
 
 #### Constructor options
@@ -227,9 +226,8 @@ console.log(admin); // { id: 1, name: "Alice" }
 | Option | Type | Description |
 |---|---|---|
 | `source` | `MVCCStore<Kin, KOut, Vin, VOut>` | The source store to derive from. |
-| `mapKey` | `(key: KOut, value: VOut) => FK` | Project a source key/value into the derived key. |
-| `mapValue` | `(key: KOut, value: VOut) => FVOut` | Project a source key/value into the derived value. |
-| `keyTransformer` | `Transformer<FK, FK>` | Pack/unpack for the derived key type. |
+| `mapKey` | `(key: KOut, value: VOut) => FKIn` | Project a source key/value into the derived key. |
+| `keyTransformer` | `Transformer<FKIn, FKOut>` | Pack/unpack for the derived key type. |
 
 #### Behaviour
 
@@ -238,7 +236,8 @@ console.log(admin); // { id: 1, name: "Alice" }
 - **Tombstone handling:** When a source key is cleared, the derived store looks up the previous value to derive the old index key and tombstones it.
 - **Key migration:** When a value update changes the derived key (e.g. a category change), the old derived key is tombstoned and the new one is written.
 - **Read-only:** `doTransaction` throws if any writes are attempted.
-- **Reads:** All `Transaction` read methods (`get`, `getRangeAll`, `getRangeAllStartsWith`, `getRange`, `getRangeStartsWith`) work on the derived store.
+- **Values:** The derived store doesn't carry source values — `get` and range reads return `unknown` (an empty object `{}`).
+- **Reads:** All `Transaction` read methods (`get`, `getRangeAll`, `getRangeAllStartsWith`, `getRange`, `getRangeStartsWith`) work on the derived store. The primary use case is checking key existence and performing range scans over the index.
 
 ---
 

@@ -1,6 +1,6 @@
 {
   "name": "@pebbletree/mvcc-testing",
-  "version": "2.0.4",
+  "version": "2.0.5",
   "description": "In-memory MVCC transactional key/value store with snapshot isolation, optimistic conflict detection, and automatic retries — inspired by FoundationDB",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

@@ -10,7 +10,7 @@ export namespace MVCCCore {
     export type MVCCStore<Kin, KOut, Vin, VOut> = store.MVCCStore<Kin, KOut, Vin, VOut>;
 
     export const DerivedMVCCStore = _DerivedMVCCStore;
-    export type DerivedMVCCStore<Kin, KOut, Vin, VOut, FK, FVOut> = _DerivedMVCCStore<Kin, KOut, Vin, VOut, FK, FVOut>;
+    export type DerivedMVCCStore<Kin, KOut, Vin, VOut, FKIn, FKOut extends FKIn> = _DerivedMVCCStore<Kin, KOut, Vin, VOut, FKIn, FKOut>;
 
     export const Subspace = _Subspace;
     export type Subspace<KI, KO, VI, VO> = _Subspace<KI, KO, VI, VO>;
