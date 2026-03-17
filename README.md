@@ -81,20 +81,119 @@ Buffer a write. The value is not visible to other transactions until the transac
 
 Mark a key as deleted. After commit, `get` will return `undefined` for this key.
 
-#### `txn.getUsingFilter(filter: (key: K, value: V) => boolean): [K, V][]`
+#### `txn.getRangeAll(start: K, end: K, opts?: RangeOptions): [K, V][]`
 
-Scan every live key/value pair in the store and return all entries where `filter` returns `true`. This is the equivalent of a table scan with a predicate.
+Return all key/value pairs whose key falls within the half-open interval `[start, end)` — i.e. `key >= start` and `key < end`. Keys are compared using the transformer's packed byte order, matching FoundationDB range-read semantics.
 
-**Conflict tracking:**
+Results are returned in sorted key order by default. Use `RangeOptions` to control order and limit.
 
-- A **point read** is recorded for each matched row, so value changes on matched keys are detected as conflicts (same as a normal `get`).
-- A **filter read** is recorded with the filter callback and the set of matched keys. At commit time the filter is re-evaluated against the current store to detect keys that were **added to** or **removed from** the result set by concurrent transactions.
+##### `RangeOptions`
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `reverse` | `boolean` | `false` | When `true`, entries are returned from high key → low key. |
+| `limit` | `number` | _(all)_ | Maximum number of entries to return. Applied after sorting/reversing. |
+
+**Conflict tracking:** a point read per matched key plus a scan read for the range. At commit time the scan is re-evaluated to detect keys **added to** or **removed from** the result set by concurrent transactions.
 
 ```ts
-const admins = await store.doTransaction(async (txn) => {
-  return txn.getUsingFilter((_key, val) => val.role === "admin");
+// Return all entries with id in [1, 10)
+const page = await store.doTransaction(async (txn) => {
+  return txn.getRangeAll({ id: 1 }, { id: 10 });
 });
-// admins is [[key1, val1], [key2, val2], ...]
+
+// Last 3 entries in the range, reversed
+const last3 = await store.doTransaction(async (txn) => {
+  return txn.getRangeAll({ id: 1 }, { id: 100 }, { reverse: true, limit: 3 });
+});
+```
+
+#### `txn.getRangeAllStartsWith(prefix: K, opts?: RangeOptions): [K, V][]`
+
+Return all key/value pairs whose packed key begins with the packed form of `prefix`. This mirrors FoundationDB's `getRangeStartsWith` — the exclusive upper bound is computed automatically via `strinc` (increment the last non-`0xff` byte of the packed prefix).
+
+Supports the same `RangeOptions` as `getRangeAll` (`reverse`, `limit`). Conflict tracking is identical.
+
+```ts
+// All entries whose tuple-encoded key starts with [1]
+const results = await store.doTransaction(async (txn) => {
+  return txn.getRangeAllStartsWith({ id: 1 });
+});
+
+// First 5 matching entries in reverse order
+const last5 = await store.doTransaction(async (txn) => {
+  return txn.getRangeAllStartsWith({ id: 1 }, { reverse: true, limit: 5 });
+});
+```
+
+---
+
+### `DerivedMVCCStore<Kin, KOut, Vin, VOut, FK, FVOut>`
+
+A read-only, automatically-maintained secondary index (derived view) over an `MVCCStore`. Every commit to the source store is synchronously projected through `mapKey` / `mapValue` into the derived store's own version map. Reads go through the normal MVCC transaction path, so you get snapshot isolation and conflict detection for free.
+
+The value-input type parameter is `never`, making `set()` uncallable at compile time. A runtime guard also prevents any writes that sneak past the type system.
+
+```ts
+import { MVCCCore } from "@pebbletree/mvcc-testing";
+const { MVCCStore, DerivedMVCCStore } = MVCCCore;
+
+type Key = { id: number };
+type Val = { name: string; category: string };
+type IKey = { category: string };
+type IVal = { id: number; name: string };
+
+const source = new MVCCStore<Key, Key, Val, Val>({ keyTransformer: { ... } });
+
+const byCategory = new DerivedMVCCStore<Key, Key, Val, Val, IKey, IVal>({
+  source,
+  mapKey: (_key, val) => ({ category: val.category }),
+  mapValue: (key, val) => ({ id: key.id, name: val.name }),
+  keyTransformer: {
+    pack: (k) => tuple.pack([k.category]),
+    unpack: (buf) => ({ category: tuple.unpack(buf)[0] as string }),
+  },
+});
+
+// Source writes are automatically projected.
+await source.doTransaction(async (txn) => {
+  txn.set({ id: 1 }, { name: "Alice", category: "admin" });
+});
+
+const admin = await byCategory.doTransaction(async (txn) => {
+  return txn.get({ category: "admin" });
+});
+console.log(admin); // { id: 1, name: "Alice" }
+```
+
+#### Constructor options
+
+| Option | Type | Description |
+|---|---|---|
+| `source` | `MVCCStore<Kin, KOut, Vin, VOut>` | The source store to derive from. |
+| `mapKey` | `(key: KOut, value: VOut) => FK` | Project a source key/value into the derived key. |
+| `mapValue` | `(key: KOut, value: VOut) => FVOut` | Project a source key/value into the derived value. |
+| `keyTransformer` | `Transformer<FK, FK>` | Pack/unpack for the derived key type. |
+
+#### Behaviour
+
+- **Backfill:** On construction, existing source data is projected into the derived store.
+- **Live updates:** A post-commit hook on the source store keeps the derived store in sync after every commit.
+- **Tombstone handling:** When a source key is cleared, the derived store looks up the previous value to derive the old index key and tombstones it.
+- **Key migration:** When a value update changes the derived key (e.g. a category change), the old derived key is tombstoned and the new one is written.
+- **Read-only:** `doTransaction` throws if any writes are attempted.
+- **Reads:** All `Transaction` read methods (`get`, `getRangeAll`, `getRangeAllStartsWith`) work on the derived store.
+
+---
+
+### `store.onCommit(hook): void`
+
+Register a callback invoked synchronously after each successful commit. The hook receives the committed write buffer and the new commit version. Used internally by `DerivedMVCCStore`, but available for custom use.
+
+```ts
+store.onCommit((writes, commitVersion) => {
+  console.log(`Version ${commitVersion}: ${writes.size} key(s) written`);
+});
 ```
 
 ---
@@ -134,15 +233,15 @@ Transactions run optimistically with no locks. At commit time the store checks e
 | Read type | Conflict condition |
 |---|---|
 | **Point read** (`get`) | The key was written at a version newer than the transaction's snapshot. |
-| **Filter read** (`getUsingFilter`) | The set of keys matching the filter has changed (additions or removals). Value changes on individual matched keys are covered by the companion point reads. |
+| **Scan read** (`getRangeAll` / `getRangeAllStartsWith`) | The set of keys matching the scan has changed (additions or removals). Value changes on individual matched keys are covered by the companion point reads. |
 
-Read operations are represented as a **discriminated union** (`ReadOperation<K, V>`):
+Read operations are represented as a **discriminated union** (`ReadOperation`):
 
 ```ts
-type ReadOperation<K, V> = KeyReadOperation | FilterReadOperation<K, V>;
+type ReadOperation = KeyReadOperation | ScanReadOperation;
 ```
 
-The commit phase dispatches each operation through `processReadOperationForConflicts`, which applies the appropriate check based on the operation's `type` discriminant.
+A `ScanReadOperation` stores the set of matched keys captured at snapshot time and a `recheck` callback that can be re-run against the current version map at commit time to detect membership changes. The commit phase dispatches each operation through `processReadOperationForConflicts`, which applies the appropriate check based on the operation's `type` discriminant.
 
 ### Automatic retry
 
@@ -171,14 +270,19 @@ The conflict check and write application happen in a single synchronous block wi
 
 ```
 src/
-  types.ts          # TOMBSTONE, VersionedEntry, TransactionOptions,
-                    # ReadOperation union, ConflictError
-  Transaction.ts    # Transaction<K, V> — get, set, clear, getUsingFilter
-  MVCCStore.ts      # MVCCStore<K, V> — doTransaction, conflict detection,
-                    # version trimming, retry loop
-  index.ts          # Barrel re-exports
+  types.ts              # TOMBSTONE, VersionedEntry, TransactionOptions,
+                        # ReadOperation union, ConflictError
+  OrderedMap.ts         # Sorted map — O(1) get, O(log n) insert
+  Transaction.ts        # Transaction — get, set, clear,
+                        # getRangeAll, getRangeAllStartsWith
+  MVCCStore.ts          # MVCCStore — doTransaction, conflict detection,
+                        # version trimming, retry loop, onCommit hooks
+  DerivedMVCCStore.ts   # DerivedMVCCStore — read-only secondary index
+  Subspace.ts           # Key/value codec base class
+  index.ts              # Barrel re-exports (MVCCCore namespace)
 tests/
-  mvccStore.test.ts # Comprehensive test suite (vitest)
+  mvccStore.test.ts         # Core store tests (vitest)
+  derivedMVCCStore.test.ts  # DerivedMVCCStore tests
 ```
 
 ## Development

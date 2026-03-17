@@ -1,12 +1,14 @@
-import stringify from "json-stable-stringify";
 import { Transaction } from "./Transaction";
 import {
-    TOMBSTONE,
     ConflictError,
     type ReadOperation,
     type TransactionOptions,
     type VersionedEntry,
+    type Tombstone,
+    Transformer,
 } from "./types";
+import Subspace from "./subspace";
+import { OrderedMap } from "./OrderedMap";
 
 const DEFAULT_MAX_RETRIES = 5;
 
@@ -36,19 +38,32 @@ const DEFAULT_MAX_RETRIES = 5;
  * @typeParam K - Key type (must be JSON-serialisable).
  * @typeParam V - Value type.
  */
-export class MVCCStore<K, V> {
+export class MVCCStore<Kin, KOut, Vin, VOut> extends Subspace<Kin, KOut, Vin, VOut> {
+    constructor(args: { keyTransformer: Transformer<Kin, KOut> }) {
+        super(args.keyTransformer)
+    }
+
+
     /**
      * Monotonically increasing version counter.
      * Incremented on every successful commit.
      */
-    private currentVersion = 0;
+    protected currentVersion = 0;
+
+    /**
+     * Hooks invoked synchronously after each successful commit.
+     * Registered via {@link onCommit}.
+     */
+    private readonly _postCommitHooks: Array<
+        (writes: ReadonlyMap<string, string | Buffer | Tombstone>, commitVersion: number) => void
+    > = [];
 
     /**
      * The core data structure.
      * Maps a *serialised* key string → ordered list of versioned entries.
      * Entries are appended in commit-version order (ascending).
      */
-    private readonly versionMap = new Map<string, VersionedEntry<V>[]>();
+    readonly versionMap = new OrderedMap<string, VersionedEntry[]>((a, b) => a < b ? -1 : a > b ? 1 : 0);
 
     /**
      * Tracks read versions held by in-flight transactions.
@@ -65,7 +80,7 @@ export class MVCCStore<K, V> {
      * Execute `callback` inside a transaction with automatic retry on conflict.
      *
      * The callback receives a `Transaction` instance exposing `get`, `set`,
-     * `clear`, and `getUsingFilter`.  When the callback's returned promise
+     * and `clear`.  When the callback's returned promise
      * resolves, the store will attempt to commit.  If a conflict is detected
      * the callback will be re-invoked from scratch (reads + writes reset) up
      * to `maxRetries` times.
@@ -73,7 +88,7 @@ export class MVCCStore<K, V> {
      * Returns the value returned by the callback on a successful commit.
      */
     async doTransaction<R>(
-        callback: (txn: Transaction<K, V>) => Promise<R>,
+        callback: (txn: Transaction<Kin, KOut, Vin, VOut>) => Promise<R>,
         options?: TransactionOptions,
     ): Promise<R> {
         const maxRetries = options?.maxRetries ?? DEFAULT_MAX_RETRIES;
@@ -84,11 +99,9 @@ export class MVCCStore<K, V> {
 
             try {
                 // 2. Create a fresh transaction bound to this snapshot.
-                const txn = new Transaction<K, V>(
+                const txn = new Transaction<Kin, KOut, Vin, VOut>(
                     readVersion,
-                    this.versionMap,
-                    this.serialize,
-                    this.deserialize,
+                    this,
                     options?.readYourOwnWrites ?? true,
                 );
 
@@ -106,6 +119,14 @@ export class MVCCStore<K, V> {
 
                 // No conflict — apply the write buffer and trim old versions.
                 this.applyWrites(txn);
+
+                // Invoke post-commit hooks before trimming so they can
+                // inspect the full version history if needed.
+                const cv = this.currentVersion;
+                for (const hook of this._postCommitHooks) {
+                    hook(txn.writeBuffer, cv);
+                }
+
                 this.trimVersions();
 
                 return result;
@@ -122,10 +143,21 @@ export class MVCCStore<K, V> {
      * Alias for {@link doTransaction}.
      */
     doTn<R>(
-        callback: (txn: Transaction<K, V>) => Promise<R>,
+        callback: (txn: Transaction<Kin, KOut, Vin, VOut>) => Promise<R>,
         options?: TransactionOptions,
     ): Promise<R> {
         return this.doTransaction(callback, options);
+    }
+
+    /**
+     * Register a callback to be invoked synchronously after each successful
+     * commit.  The callback receives the committed write buffer and the new
+     * commit version.
+     */
+    onCommit(
+        hook: (writes: ReadonlyMap<string, string | Buffer | Tombstone>, commitVersion: number) => void,
+    ): void {
+        this._postCommitHooks.push(hook);
     }
 
     /**
@@ -216,30 +248,6 @@ export class MVCCStore<K, V> {
     // Private helpers
     // ---------------------------------------------------------------------------
 
-    /**
-     * Deterministically serialise a key object using `json-stable-stringify`
-     * so that structurally identical objects always map to the same string.
-     *
-     * Bound as an arrow function so it can be safely passed by reference to
-     * `Transaction`.
-     */
-    private serialize = (key: K): string => {
-        const result = stringify(key);
-        if (result === undefined) {
-            throw new TypeError(
-                "Key cannot be serialised to JSON: " + String(key),
-            );
-        }
-        return result;
-    };
-
-    /**
-     * Deserialise a serialised key string back to the original key object.
-     * Bound as an arrow function so it can be passed by reference.
-     */
-    private deserialize = (serialised: string): K => {
-        return JSON.parse(serialised) as K;
-    };
 
     // ---------------------------------------------------------------------------
     // Conflict detection
@@ -250,7 +258,7 @@ export class MVCCStore<K, V> {
      * conflicts.  Returns `true` if any operation conflicts.
      */
     private detectConflict(
-        txn: Transaction<K, V>,
+        txn: Transaction<Kin, KOut, Vin, VOut>,
         readVersion: number,
     ): boolean {
         for (const op of txn.readOperations) {
@@ -265,21 +273,20 @@ export class MVCCStore<K, V> {
      * Dispatch a single `ReadOperation` and return `true` if it conflicts.
      *
      * - **read**: the key was written at a version newer than `readVersion`.
-     * - **filterRead**: the set of keys matching the filter has changed
-     *   (additions or removals).  Value changes on individual matched keys
-     *   are already covered by the companion `read` operations that
-     *   `getUsingFilter` records for each matched row.
+     * - **scanRead**: the set of keys returned by the recheck callback has
+     *   changed (additions or removals).  Value changes on individual matched
+     *   keys are already covered by the companion `read` operations.
      */
     private processReadOperationForConflicts(
-        op: ReadOperation<K, V>,
+        op: ReadOperation,
         readVersion: number,
     ): boolean {
         switch (op.type) {
             case "read":
                 return this.checkKeyConflict(op.key, readVersion);
 
-            case "filterRead":
-                return this.checkFilterConflict(op, readVersion);
+            case "scanRead":
+                return this.checkScanConflict(op, readVersion);
         }
     }
 
@@ -301,57 +308,28 @@ export class MVCCStore<K, V> {
     }
 
     /**
-     * Re-run the filter against the *current* store state and compare the
-     * resulting set of matched keys with the set captured at snapshot time.
-     * Returns `true` if any keys were added or removed (i.e. the membership
-     * of the result set changed).
+     * Invoke the scan's `recheck` callback against the current committed
+     * version map and compare the resulting key set to the one captured at
+     * snapshot time.  Returns `true` if membership changed (additions or
+     * removals).
      *
-     * Value changes on previously-matched rows do NOT need checking here —
-     * those are caught by the individual `read` operations recorded alongside
-     * the `filterRead`.
+     * Value changes on previously-matched rows are caught by companion
+     * `read` operations and do not need checking here.
      */
-    private checkFilterConflict(
-        op: { filter: (key: K, value: V) => boolean; matchedKeys: Set<string> },
+    private checkScanConflict(
+        op: { recheck: (vm: OrderedMap<string, VersionedEntry[]>) => Set<string>; matchedKeys: Set<string> },
         _readVersion: number,
     ): boolean {
-        const currentMatchedKeys = new Set<string>();
+        const currentMatchedKeys = op.recheck(this.versionMap);
 
-        for (const [serialisedKey, entries] of this.versionMap) {
-            if (!entries || entries.length === 0) {
-                continue;
-            }
-
-            // Resolve the *latest* committed value (current state, not snapshot).
-            const latest = entries[entries.length - 1]!;
-            if (latest.value === TOMBSTONE) {
-                // Key is currently deleted.  If it was in the original matched set,
-                // that's a removal → conflict (but that would already be caught by
-                // the companion `read` op, so we still track it here for
-                // completeness of set-diff detection).
-                if (op.matchedKeys.has(serialisedKey)) {
-                    return true;
-                }
-                continue;
-            }
-
-            const key = this.deserialize(serialisedKey);
-            if (op.filter(key, latest.value)) {
-                currentMatchedKeys.add(serialisedKey);
-            }
-        }
-
-        // Detect additions: keys now matching that didn't match at snapshot time.
+        // Detect additions: keys now matching that didn't at snapshot time.
         for (const k of currentMatchedKeys) {
-            if (!op.matchedKeys.has(k)) {
-                return true;
-            }
+            if (!op.matchedKeys.has(k)) return true;
         }
 
-        // Detect removals: keys that matched at snapshot time but no longer match.
+        // Detect removals: keys that matched at snapshot time but no longer.
         for (const k of op.matchedKeys) {
-            if (!currentMatchedKeys.has(k)) {
-                return true;
-            }
+            if (!currentMatchedKeys.has(k)) return true;
         }
 
         return false;
@@ -361,7 +339,7 @@ export class MVCCStore<K, V> {
      * Apply the transaction's buffered writes to the version map and bump
      * `currentVersion`.  Must be called only when no conflict was detected.
      */
-    private applyWrites(txn: Transaction<K, V>): void {
+    private applyWrites(txn: Transaction<Kin, KOut, Vin, VOut>): void {
         if (txn.writeBuffer.size === 0) {
             return; // read-only transaction — nothing to commit.
         }
@@ -377,7 +355,7 @@ export class MVCCStore<K, V> {
             }
             entries.push({
                 version: commitVersion,
-                value: value as V | typeof TOMBSTONE,
+                value: value
             });
         }
     }

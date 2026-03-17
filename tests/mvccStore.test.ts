@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { MVCCStore, ConflictError } from "../src";
-
+import { MVCCCore } from "../src";
+const { MVCCStore, ConflictError } = MVCCCore;
+import tuple from "fdb-tuple";
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -9,7 +10,20 @@ type Key = { id: number };
 type Val = { name: string; count?: number };
 
 function makeStore() {
-    return new MVCCStore<Key, Val>();
+    return new MVCCStore<Key, Key, Val, Val>({
+        keyTransformer: {
+            pack: (key) => {
+                return tuple.pack([key.id]);
+            },
+            unpack: (buffer) => {
+                const [id] = tuple.unpack(buffer);
+                if (typeof id !== "number") {
+                    throw new Error("Invalid key format");
+                }
+                return { id };
+            },
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -128,6 +142,23 @@ describe("key serialisation", () => {
         // Different object reference, same structure
         const result = await store.doTransaction(async (txn) => {
             return txn.get({ id: 1 });
+        });
+
+        expect(result).toEqual({ name: "Alice" });
+    });
+
+    it("ignores additional properties on the key — only the packed fields matter", async () => {
+        const store = makeStore();
+
+        // Set using a plain key.
+        await store.doTransaction(async (txn) => {
+            txn.set({ id: 1 }, { name: "Alice" });
+        });
+
+        // Get using a key object with extra properties — the tuple packer
+        // only encodes `id`, so the extra fields should be irrelevant.
+        const result = await store.doTransaction(async (txn) => {
+            return txn.get({ id: 1, extra: "ignored" } as any);
         });
 
         expect(result).toEqual({ name: "Alice" });
@@ -371,11 +402,265 @@ describe("readYourOwnWrites option", () => {
 });
 
 // ---------------------------------------------------------------------------
-// getUsingFilter
+// getRangeAll
 // ---------------------------------------------------------------------------
 
-describe("getUsingFilter", () => {
-    it("returns all matching entries", async () => {
+describe("getRangeAll", () => {
+    it("returns entries within [start, end) in sorted order", async () => {
+        const store = makeStore();
+
+        await store.doTransaction(async (txn) => {
+            txn.set({ id: 1 }, { name: "Alice" });
+            txn.set({ id: 3 }, { name: "Charlie" });
+            txn.set({ id: 5 }, { name: "Eve" });
+            txn.set({ id: 7 }, { name: "Grace" });
+            txn.set({ id: 9 }, { name: "Ivy" });
+        });
+
+        const result = await store.doTransaction(async (txn) => {
+            return txn.getRangeAll({ id: 3 }, { id: 8 });
+        });
+
+        expect(result.map(([k]) => k.id)).toEqual([3, 5, 7]);
+        expect(result.map(([, v]) => v.name)).toEqual(["Charlie", "Eve", "Grace"]);
+    });
+
+    it("start is inclusive and end is exclusive", async () => {
+        const store = makeStore();
+
+        await store.doTransaction(async (txn) => {
+            txn.set({ id: 3 }, { name: "Charlie" });
+            txn.set({ id: 5 }, { name: "Eve" });
+        });
+
+        const result = await store.doTransaction(async (txn) => {
+            return txn.getRangeAll({ id: 3 }, { id: 5 });
+        });
+
+        // id:3 included, id:5 excluded
+        expect(result).toHaveLength(1);
+        expect(result[0]![0].id).toBe(3);
+    });
+
+    it("returns empty array when no keys fall in range", async () => {
+        const store = makeStore();
+
+        await store.doTransaction(async (txn) => {
+            txn.set({ id: 1 }, { name: "Alice" });
+            txn.set({ id: 10 }, { name: "Jane" });
+        });
+
+        const result = await store.doTransaction(async (txn) => {
+            return txn.getRangeAll({ id: 4 }, { id: 6 });
+        });
+
+        expect(result).toEqual([]);
+    });
+
+    it("reverse option returns entries from high to low", async () => {
+        const store = makeStore();
+
+        await store.doTransaction(async (txn) => {
+            txn.set({ id: 1 }, { name: "Alice" });
+            txn.set({ id: 2 }, { name: "Bob" });
+            txn.set({ id: 3 }, { name: "Charlie" });
+            txn.set({ id: 4 }, { name: "Dana" });
+        });
+
+        const result = await store.doTransaction(async (txn) => {
+            return txn.getRangeAll({ id: 1 }, { id: 5 }, { reverse: true });
+        });
+
+        expect(result.map(([k]) => k.id)).toEqual([4, 3, 2, 1]);
+    });
+
+    it("limit option restricts number of results", async () => {
+        const store = makeStore();
+
+        await store.doTransaction(async (txn) => {
+            txn.set({ id: 1 }, { name: "Alice" });
+            txn.set({ id: 2 }, { name: "Bob" });
+            txn.set({ id: 3 }, { name: "Charlie" });
+            txn.set({ id: 4 }, { name: "Dana" });
+        });
+
+        const result = await store.doTransaction(async (txn) => {
+            return txn.getRangeAll({ id: 1 }, { id: 5 }, { limit: 2 });
+        });
+
+        expect(result).toHaveLength(2);
+        expect(result.map(([k]) => k.id)).toEqual([1, 2]);
+    });
+
+    it("reverse + limit returns the last N entries", async () => {
+        const store = makeStore();
+
+        await store.doTransaction(async (txn) => {
+            txn.set({ id: 1 }, { name: "Alice" });
+            txn.set({ id: 2 }, { name: "Bob" });
+            txn.set({ id: 3 }, { name: "Charlie" });
+            txn.set({ id: 4 }, { name: "Dana" });
+            txn.set({ id: 5 }, { name: "Eve" });
+        });
+
+        const result = await store.doTransaction(async (txn) => {
+            return txn.getRangeAll({ id: 1 }, { id: 6 }, { reverse: true, limit: 3 });
+        });
+
+        expect(result).toHaveLength(3);
+        expect(result.map(([k]) => k.id)).toEqual([5, 4, 3]);
+    });
+
+    it("includes uncommitted writes from the same transaction (RYOW)", async () => {
+        const store = makeStore();
+
+        await store.doTransaction(async (txn) => {
+            txn.set({ id: 1 }, { name: "Alice" });
+            txn.set({ id: 5 }, { name: "Eve" });
+        });
+
+        const result = await store.doTransaction(async (txn) => {
+            // Write a new key in-range within this transaction.
+            txn.set({ id: 3 }, { name: "Charlie" });
+            return txn.getRangeAll({ id: 1 }, { id: 6 });
+        });
+
+        expect(result.map(([k]) => k.id)).toEqual([1, 3, 5]);
+    });
+
+    it("conflicts when a new key is added in the range by another txn", async () => {
+        const store = makeStore();
+
+        await store.doTransaction(async (txn) => {
+            txn.set({ id: 1 }, { name: "Alice" });
+            txn.set({ id: 5 }, { name: "Eve" });
+        });
+
+        let attempts = 0;
+        await store.doTransaction(async (txn) => {
+            attempts++;
+            txn.getRangeAll({ id: 1 }, { id: 10 });
+
+            if (attempts === 1) {
+                // Concurrently insert a new key in the range.
+                await store.doTransaction(async (inner) => {
+                    inner.set({ id: 3 }, { name: "Charlie" });
+                });
+            }
+        });
+
+        expect(attempts).toBeGreaterThan(1);
+    });
+
+    it("conflicts when a key in the range is removed by another txn", async () => {
+        const store = makeStore();
+
+        await store.doTransaction(async (txn) => {
+            txn.set({ id: 1 }, { name: "Alice" });
+            txn.set({ id: 3 }, { name: "Charlie" });
+            txn.set({ id: 5 }, { name: "Eve" });
+        });
+
+        let attempts = 0;
+        await store.doTransaction(async (txn) => {
+            attempts++;
+            txn.getRangeAll({ id: 1 }, { id: 10 });
+
+            if (attempts === 1) {
+                await store.doTransaction(async (inner) => {
+                    inner.clear({ id: 3 });
+                });
+            }
+        });
+
+        expect(attempts).toBeGreaterThan(1);
+    });
+
+    it("does not conflict when a key outside the range is modified", async () => {
+        const store = makeStore();
+
+        await store.doTransaction(async (txn) => {
+            txn.set({ id: 1 }, { name: "Alice" });
+            txn.set({ id: 20 }, { name: "Tara" });
+        });
+
+        let attempts = 0;
+        await store.doTransaction(async (txn) => {
+            attempts++;
+            txn.getRangeAll({ id: 1 }, { id: 10 });
+
+            if (attempts === 1) {
+                await store.doTransaction(async (inner) => {
+                    inner.set({ id: 20 }, { name: "Tara2" });
+                });
+            }
+        });
+
+        expect(attempts).toBe(1);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// getRangeAllStartsWith
+// ---------------------------------------------------------------------------
+
+describe("getRangeAllStartsWith", () => {
+    it("returns all entries whose packed key starts with the prefix", async () => {
+        const store = makeStore();
+
+        await store.doTransaction(async (txn) => {
+            txn.set({ id: 1 }, { name: "Alice" });
+            txn.set({ id: 2 }, { name: "Bob" });
+            txn.set({ id: 3 }, { name: "Charlie" });
+        });
+
+        // Each key packs as a unique tuple, so querying with a specific id
+        // should return exactly that entry.
+        const result = await store.doTransaction(async (txn) => {
+            return txn.getRangeAllStartsWith({ id: 2 });
+        });
+
+        expect(result).toHaveLength(1);
+        expect(result[0]![0].id).toBe(2);
+        expect(result[0]![1].name).toBe("Bob");
+    });
+
+    it("returns empty array when no keys match the prefix", async () => {
+        const store = makeStore();
+
+        await store.doTransaction(async (txn) => {
+            txn.set({ id: 1 }, { name: "Alice" });
+        });
+
+        const result = await store.doTransaction(async (txn) => {
+            return txn.getRangeAllStartsWith({ id: 999 });
+        });
+
+        expect(result).toEqual([]);
+    });
+
+    it("supports reverse option", async () => {
+        const store = makeStore();
+
+        await store.doTransaction(async (txn) => {
+            txn.set({ id: 1 }, { name: "Alice" });
+            txn.set({ id: 2 }, { name: "Bob" });
+            txn.set({ id: 3 }, { name: "Charlie" });
+        });
+
+        // With the tuple encoding each id is its own prefix, but we can
+        // verify reverse works by checking a broader scenario.
+        // Use a store with multi-element tuple keys to show prefix matching.
+        // For this simple store, just verify the option doesn't error.
+        const result = await store.doTransaction(async (txn) => {
+            return txn.getRangeAllStartsWith({ id: 2 }, { reverse: true });
+        });
+
+        expect(result).toHaveLength(1);
+        expect(result[0]![0].id).toBe(2);
+    });
+
+    it("supports limit option", async () => {
         const store = makeStore();
 
         await store.doTransaction(async (txn) => {
@@ -385,23 +670,7 @@ describe("getUsingFilter", () => {
         });
 
         const result = await store.doTransaction(async (txn) => {
-            return txn.getUsingFilter((_key, val) => val.name.startsWith("A") || val.name.startsWith("C"));
-        });
-
-        expect(result).toHaveLength(2);
-        const names = result.map(([_k, v]) => v.name).sort();
-        expect(names).toEqual(["Alice", "Charlie"]);
-    });
-
-    it("returns empty array when nothing matches", async () => {
-        const store = makeStore();
-
-        await store.doTransaction(async (txn) => {
-            txn.set({ id: 1 }, { name: "Alice" });
-        });
-
-        const result = await store.doTransaction(async (txn) => {
-            return txn.getUsingFilter((_key, val) => val.name === "Nobody");
+            return txn.getRangeAllStartsWith({ id: 2 }, { limit: 0 });
         });
 
         expect(result).toEqual([]);
@@ -410,22 +679,16 @@ describe("getUsingFilter", () => {
     it("includes uncommitted writes from the same transaction (RYOW)", async () => {
         const store = makeStore();
 
-        // Pre-populate so the filter scan has a committed baseline.
-        await store.doTransaction(async (txn) => {
-            txn.set({ id: 1 }, { name: "Alice" });
-        });
-
         const result = await store.doTransaction(async (txn) => {
-            // Add a new key within the transaction.
-            txn.set({ id: 2 }, { name: "Bob" });
-            return txn.getUsingFilter((_key, val) => val.name === "Bob");
+            txn.set({ id: 5 }, { name: "Eve" });
+            return txn.getRangeAllStartsWith({ id: 5 });
         });
 
         expect(result).toHaveLength(1);
-        expect(result[0]![1].name).toBe("Bob");
+        expect(result[0]![1].name).toBe("Eve");
     });
 
-    it("conflicts when a new matching row is added by another transaction", async () => {
+    it("conflicts when a matching key is added by another txn", async () => {
         const store = makeStore();
 
         await store.doTransaction(async (txn) => {
@@ -435,23 +698,19 @@ describe("getUsingFilter", () => {
         let attempts = 0;
         await store.doTransaction(async (txn) => {
             attempts++;
-
-            // Filter scan — only Alice matches.
-            txn.getUsingFilter((_key, val) => val.name.length > 0);
+            txn.getRangeAllStartsWith({ id: 2 });
 
             if (attempts === 1) {
-                // Concurrently add a new matching row.
                 await store.doTransaction(async (inner) => {
                     inner.set({ id: 2 }, { name: "Bob" });
                 });
             }
         });
 
-        // Should have retried at least once because the filter result set changed.
         expect(attempts).toBeGreaterThan(1);
     });
 
-    it("conflicts when a matched row is removed by another transaction", async () => {
+    it("does not conflict when a key outside the prefix is modified", async () => {
         const store = makeStore();
 
         await store.doTransaction(async (txn) => {
@@ -462,69 +721,15 @@ describe("getUsingFilter", () => {
         let attempts = 0;
         await store.doTransaction(async (txn) => {
             attempts++;
-
-            // Filter scan — both match.
-            txn.getUsingFilter(() => true);
+            txn.getRangeAllStartsWith({ id: 1 });
 
             if (attempts === 1) {
-                // Concurrently remove one.
-                await store.doTransaction(async (inner) => {
-                    inner.clear({ id: 2 });
-                });
-            }
-        });
-
-        expect(attempts).toBeGreaterThan(1);
-    });
-
-    it("conflicts when a matched row's value is changed by another transaction", async () => {
-        const store = makeStore();
-
-        await store.doTransaction(async (txn) => {
-            txn.set({ id: 1 }, { name: "Alice" });
-        });
-
-        let attempts = 0;
-        await store.doTransaction(async (txn) => {
-            attempts++;
-            txn.getUsingFilter((_key, val) => val.name === "Alice");
-
-            if (attempts === 1) {
-                // Concurrently modify the matched row's value.
-                await store.doTransaction(async (inner) => {
-                    inner.set({ id: 1 }, { name: "Alice2" });
-                });
-            }
-        });
-
-        // The individual read op on the matched key should detect the conflict.
-        expect(attempts).toBeGreaterThan(1);
-    });
-
-    it("does not conflict when an unmatched row is modified", async () => {
-        const store = makeStore();
-
-        await store.doTransaction(async (txn) => {
-            txn.set({ id: 1 }, { name: "Alice" });
-            txn.set({ id: 2 }, { name: "Bob" });
-        });
-
-        let attempts = 0;
-        await store.doTransaction(async (txn) => {
-            attempts++;
-
-            // Filter scan — only Alice matches.
-            txn.getUsingFilter((_key, val) => val.name === "Alice");
-
-            if (attempts === 1) {
-                // Concurrently modify Bob (not in the filter result set).
                 await store.doTransaction(async (inner) => {
                     inner.set({ id: 2 }, { name: "Bob2" });
                 });
             }
         });
 
-        // No conflict — unmatched row was changed.
         expect(attempts).toBe(1);
     });
 });

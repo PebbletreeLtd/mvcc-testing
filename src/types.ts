@@ -1,3 +1,6 @@
+import { OrderedMap } from "./OrderedMap";
+import type Subspace from "./subspace";
+
 /**
  * Unique sentinel value used to represent a cleared (deleted) key in the
  * MVCC version history.  Storing a tombstone rather than removing the entry
@@ -11,9 +14,9 @@ export type Tombstone = typeof TOMBSTONE;
  * `version` is the commit-version at which this value was written.
  * `value` is either the real value or `TOMBSTONE` if the key was cleared.
  */
-export interface VersionedEntry<V> {
+export interface VersionedEntry {
     version: number;
-    value: V | Tombstone;
+    value: string | Buffer | Tombstone;
 }
 
 /**
@@ -50,25 +53,29 @@ export interface KeyReadOperation {
 }
 
 /**
- * A filter-based scan.  Stores the filter callback and the set of serialised
- * keys that matched at read time.  Individual matched rows are *also*
- * recorded as `KeyReadOperation` entries (so value-change conflicts on
- * matched keys are caught automatically).  At commit time the filter is
- * re-evaluated against the current store to detect keys that were added to
- * or removed from the result set.
+ * A scan-based read (filter scan, range scan, etc.).  At commit time the
+ * store calls `recheck` to obtain the current set of matching serialised
+ * keys and compares it to `matchedKeys` captured at snapshot time.  If
+ * membership changed (additions or removals) the transaction conflicts.
+ *
+ * Individual matched rows are *also* recorded as `KeyReadOperation` entries
+ * so value-change conflicts are caught automatically.
  */
-export interface FilterReadOperation<K, V> {
-    type: "filterRead";
-    /** The filter callback supplied by the caller. */
-    filter: (key: K, value: V) => boolean;
-    /** Serialised keys that matched the filter at snapshot time. */
+export interface ScanReadOperation {
+    type: "scanRead";
+    /**
+     * Re-execute the scan against the *current* committed state of the
+     * version map and return the set of serialised keys that match.
+     */
+    recheck: (versionMap: OrderedMap<string, VersionedEntry[]>) => Set<string>;
+    /** Serialised keys that matched at snapshot time. */
     matchedKeys: Set<string>;
 }
 
 /**
  * Discriminated union of all read-operation kinds tracked by a transaction.
  */
-export type ReadOperation<K, V> = KeyReadOperation | FilterReadOperation<K, V>;
+export type ReadOperation = KeyReadOperation | ScanReadOperation;
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -84,4 +91,46 @@ export class ConflictError extends Error {
         super(message ?? "Transaction conflict: maximum retries exceeded");
         this.name = "ConflictError";
     }
+}
+
+
+export interface Transformer<VIN, VOUT> {
+    pack: (value: VIN) => Buffer;
+    unpack: (buffer: Buffer) => VOUT;
+}
+
+export interface RangeOptions {
+    limit?: number;
+    reverse?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// ITransaction — FDB-compatible interface
+// ---------------------------------------------------------------------------
+
+/**
+ * A FoundationDB-compatible transaction interface.
+ *
+ * In FoundationDB the read methods (`get`, `getRangeAll`,
+ * `getRangeAllStartsWith`) return `Promise<T>`.  In this in-memory MVCC
+ * store they return `T` synchronously.  This interface accommodates both by
+ * typing return values as `T | Promise<T>`, so code written against
+ * `ITransaction` works with either implementation.
+ */
+export interface ITransaction<Kin, KOut, Vin, VOut> {
+    get(key: Kin): VOut | undefined | Promise<VOut | undefined>;
+    set(key: Kin, value: Vin): void;
+    clear(key: Kin): void;
+    getRangeAll(
+        start: Kin,
+        end: Kin,
+        opts?: RangeOptions,
+    ): [KOut, VOut][] | Promise<[KOut, VOut][]>;
+    getRangeAllStartsWith(
+        prefix: Kin,
+        opts?: RangeOptions,
+    ): [KOut, VOut][] | Promise<[KOut, VOut][]>;
+    at<SubKeyIn, SubKeyOut, SubValIn, SubValOut>(
+        subspace: Subspace<SubKeyIn, SubKeyOut, SubValIn, SubValOut>,
+    ): ITransaction<SubKeyIn, SubKeyOut, SubValIn, SubValOut>;
 }
