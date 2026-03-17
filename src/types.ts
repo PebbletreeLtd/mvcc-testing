@@ -134,3 +134,6 @@ export interface ITransaction<Kin, KOut, Vin, VOut> {
         subspace: Subspace<SubKeyIn, SubKeyOut, SubValIn, SubValOut>,
     ): ITransaction<SubKeyIn, SubKeyOut, SubValIn, SubValOut>;
 }
+
+
+export type TransactionFactory<K, V> = <R>(callback: (txn: ITransaction<K, K, V, V>) => Promise<R>, options?: TransactionOptions) => Promise<R>;
