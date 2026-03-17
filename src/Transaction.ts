@@ -259,7 +259,7 @@ export class Transaction<Kin, KOut, Vin, VOut> implements ITransaction<Kin, KOut
      */
     at<SubKeyIn, SubKeyOut, SubValIn, SubValOut>(
         subspace: Subspace<SubKeyIn, SubKeyOut, SubValIn, SubValOut>,
-    ): Transaction<SubKeyIn, SubKeyOut, SubValIn, SubValOut> {
+    ): ITransaction<SubKeyIn, SubKeyOut, SubValIn, SubValOut> {
         return new Transaction<SubKeyIn, SubKeyOut, SubValIn, SubValOut>(
             this.readVersion,
             subspace,
