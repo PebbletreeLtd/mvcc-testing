@@ -12,12 +12,12 @@ npm install @pebbletree/mvcc-testing
 
 ```ts
 import { MVCCCore } from "@pebbletree/mvcc-testing";
-const { MVCCStore } = MVCCCore;
+const { Store } = MVCCCore;
 
 type Key = { id: number };
 type Val = { name: string; count: number };
 
-const store = new MVCCStore<Key, Key, Val, Val>({
+const store = new Store<Key, Key, Val, Val>({
   keyTransformer: {
     pack: (k) => JSON.stringify(k),
     unpack: (buf) => JSON.parse(buf.toString()),
@@ -43,7 +43,7 @@ console.log(result); // { name: "Alice", count: 0 }
 
 ### `Subspace<KeyIn, KeyOut, ValIn, ValOut>`
 
-Base class providing key/value codec with an optional **prefix**. Both `MVCCStore` and `DerivedMVCCStore` extend `Subspace`.
+Base class providing key/value codec with an optional **prefix**. Both `Store` and `DerivedSubspace` extend `Subspace`.
 
 When a `prefix` string is supplied, it is [tuple-packed](https://github.com/nicktindall/fdb-tuple) and automatically **prepended** to every key in `packKey()` and **stripped** in `unpackKey()`. This gives each store its own isolated key namespace — the same mechanism FoundationDB uses for directory/subspace partitioning.
 
@@ -66,7 +66,7 @@ Strip the prefix bytes (if set) and unpack via the transformer. **Throws** if th
 
 ---
 
-### `MVCCStore<Kin, KOut, Vin, VOut>`
+### `Store<Kin, KOut, Vin, VOut>`
 
 The top-level store. Extends `Subspace`. Keys must be JSON-serialisable — they are deterministically serialised via [`json-stable-stringify`](https://github.com/ljharb/json-stable-stringify) so that structurally identical objects always resolve to the same internal map entry.
 
@@ -226,23 +226,23 @@ await store.doTransaction(async (txn) => {
 
 ---
 
-### `DerivedMVCCStore<Kin, KOut, Vin, VOut, FKIn, FKOut extends FKIn>`
+### `DerivedSubspace<Kin, KOut, Vin, VOut, FKIn, FKOut extends FKIn>`
 
-A read-only, automatically-maintained secondary index (derived view) over an `MVCCStore`. Every commit to the source store is synchronously projected through `mapKey` and written into the **source** store's `versionMap` (namespaced by the derived store's prefix). Reads go through the normal MVCC transaction path, so you get snapshot isolation and conflict detection for free.
+A read-only, automatically-maintained secondary index (derived view) over a `Store`. Every commit to the source store is synchronously projected through `mapKey` and written into the **source** store's `versionMap` (namespaced by the derived store's prefix). Reads go through the normal MVCC transaction path, so you get snapshot isolation and conflict detection for free.
 
-The derived store extends `Subspace<FKIn, FKOut, never, unknown>` — it is **not** a separate store. Derived entries live in the source store's version map, so `txn.at(derivedStore)` inside a source transaction sees them naturally. The `never` value-input type makes `set()` uncallable at compile time, and a runtime guard prevents any writes that sneak past the type system. `FKOut` must extend `FKIn`.
+The derived subspace extends `Subspace<FKIn, FKOut, never, unknown>` — it is **not** a separate store. Derived entries live in the source store's version map, so `txn.at(derivedSubspace)` inside a source transaction sees them naturally. The `never` value-input type makes `set()` uncallable at compile time, and a runtime guard prevents any writes that sneak past the type system. `FKOut` must extend `FKIn`.
 
 ```ts
 import { MVCCCore } from "@pebbletree/mvcc-testing";
-const { MVCCStore, DerivedMVCCStore } = MVCCCore;
+const { Store, DerivedSubspace } = MVCCCore;
 
 type Key = { id: number };
 type Val = { name: string; category: string };
 type IKey = { category: string };
 
-const source = new MVCCStore<Key, Key, Val, Val>({ keyTransformer: { ... } });
+const source = new Store<Key, Key, Val, Val>({ keyTransformer: { ... } });
 
-const byCategory = new DerivedMVCCStore<Key, Key, Val, Val, IKey, IKey>({
+const byCategory = new DerivedSubspace<Key, Key, Val, Val, IKey, IKey>({
   source,
   mapKey: (_key, val) => ({ category: val.category }),
   prefix: "byCategory",
@@ -274,28 +274,28 @@ await source.doTransaction(async (txn) => {
 
 | Option | Type | Description |
 |---|---|---|
-| `source` | `MVCCStore<Kin, KOut, Vin, VOut>` | The source store to derive from. |
+| `source` | `Store<Kin, KOut, Vin, VOut>` | The source store to derive from. |
 | `mapKey` | `(key: KOut, value: VOut) => FKIn` | Project a source key/value into the derived key. |
 | `keyTransformer` | `Transformer<FKIn, FKOut>` | Pack/unpack for the derived key type. |
 | `prefix` | `string` _(optional)_ | Namespace prefix for the derived key space. |
 
 #### Behaviour
 
-- **Subspace, not a store:** `DerivedMVCCStore` extends `Subspace`, not `MVCCStore`. Derived entries are written directly into the source store's `versionMap`, so `txn.at(derivedStore)` works from any source transaction.
+- **Subspace, not a store:** `DerivedSubspace` extends `Subspace`, not `Store`. Derived entries are written directly into the source store's `versionMap`, so `txn.at(derivedSubspace)` works from any source transaction.
 - **Backfill:** On construction, existing source data is projected into the source's `versionMap` under the derived prefix.
 - **Live updates:** A post-commit hook on the source store keeps derived entries in sync after every commit.
 - **Tombstone handling:** When a source key is cleared, the derived store looks up the previous value to derive the old index key and tombstones it.
 - **Key migration:** When a value update changes the derived key (e.g. a category change), the old derived key is tombstoned and the new one is written.
 - **Read-only:** `doTransaction` throws if any writes are attempted.
 - **Values:** The derived store doesn't carry source values — `get` and range reads return `unknown` (an empty object `{}`).
-- **Reads:** All `ITransaction` read methods (`get`, `getRangeAll`, `getRangeAllStartsWith`, `getRange`, `getRangeStartsWith`) work on the derived store — either through `derived.doTransaction(...)` or through `txn.at(derived)` from a source transaction.
+- **Reads:** All `ITransaction` read methods (`get`, `getRangeAll`, `getRangeAllStartsWith`, `getRange`, `getRangeStartsWith`) work on the derived subspace — either through `derived.doTransaction(...)` or through `txn.at(derived)` from a source transaction.
 - **Prefix isolation:** When the source store uses a `prefix`, the derived store's post-commit hook uses `contains()` to skip keys belonging to other subspaces — so multiple subspaces can share a single source store safely.
 
 ---
 
 ### `store.onCommit(hook): void`
 
-Register a callback invoked synchronously after each successful commit. The hook receives the committed write buffer and the new commit version. Used internally by `DerivedMVCCStore`, but available for custom use.
+Register a callback invoked synchronously after each successful commit. The hook receives the committed write buffer and the new commit version. Used internally by `DerivedSubspace`, but available for custom use.
 
 ```ts
 store.onCommit((writes, commitVersion) => {
@@ -383,14 +383,14 @@ src/
   Transaction.ts        # Transaction — get, set, clear, getRangeAll,
                         # getRangeAllStartsWith, getRange, getRangeStartsWith,
                         # at, snapshot
-  MVCCStore.ts          # MVCCStore — doTransaction, conflict detection,
+  Store.ts              # Store — doTransaction, conflict detection,
                         # version trimming, retry loop, onCommit hooks
-  DerivedMVCCStore.ts   # DerivedMVCCStore — read-only secondary index
+  DerivedSubspace.ts    # DerivedSubspace — read-only secondary index
   subspace.ts           # Key/value codec base class
   index.ts              # Barrel re-exports (MVCCCore namespace)
 tests/
-  mvccStore.test.ts          # Core store tests (vitest)
-  derivedMVCCStore.test.ts   # DerivedMVCCStore tests
+  store.test.ts              # Core store tests (vitest)
+  derivedSubspace.test.ts    # DerivedSubspace tests
   scopedTransaction.test.ts  # Scoped transaction (at) tests
 ```
 

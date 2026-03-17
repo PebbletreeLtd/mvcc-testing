@@ -8,8 +8,12 @@ import {
     type Transformer,
 } from "./types";
 
-/** Singleton empty buffer written as the value for every derived entry. */
-const EMPTY_BUF = Buffer.alloc(0);
+/**
+ * Value written for every derived entry.  Uses a valid JSON payload so that
+ * any Subspace's default `unpackValue` (`JSON.parse`) can decode it — not
+ * just the DerivedSubspace's own override.
+ */
+const EMPTY_VAL = Buffer.from("{}");
 
 /**
  * A read-only, automatically-maintained secondary index (derived view) over
@@ -136,7 +140,7 @@ export class DerivedSubspace<
             const derivedKey = this._mapKey(srcKey, srcValue);
             const derivedKeyHex = this._derivedKeyHex(derivedKey);
 
-            this._writeEntry(derivedKeyHex, EMPTY_BUF, latest.version);
+            this._writeEntry(derivedKeyHex, EMPTY_VAL, latest.version);
         }
     }
 
@@ -212,7 +216,7 @@ export class DerivedSubspace<
             }
         }
 
-        this._writeEntry(derivedKeyHex, EMPTY_BUF, commitVersion);
+        this._writeEntry(derivedKeyHex, EMPTY_VAL, commitVersion);
     }
 
     // -----------------------------------------------------------------------

@@ -354,3 +354,159 @@ describe('DerivedSubspace via txn.at()', () => {
         expect(admin).toBeDefined();
     });
 });
+
+// ---------------------------------------------------------------------------
+// Partial-key range subspace — mirrors the "at" index pattern
+// ---------------------------------------------------------------------------
+
+describe("DerivedSubspace with partial-key range subspace", () => {
+    // Source store: jobs keyed by job_id, with an "at" timestamp in the value.
+    type JobKey = { job_id: string };
+    type JobVal = { at: number; name: string };
+
+    // Derived index key: [at, job_id]
+    type AtKey = { at: number; job_id: string };
+
+    function makeJobStore() {
+        return new Store<JobKey, JobKey, JobVal, JobVal>({
+            prefix: "jobs",
+            keyTransformer: {
+                pack: (k) => tuple.pack([k.job_id]),
+                unpack: (buf) => {
+                    const [job_id] = tuple.unpack(buf);
+                    return { job_id: job_id as string };
+                },
+            },
+        });
+    }
+
+    function makeAtIndex(source: InstanceType<typeof Store<JobKey, JobKey, JobVal, JobVal>>) {
+        return new DerivedSubspace<JobKey, JobKey, JobVal, JobVal, AtKey, AtKey>({
+            source,
+            mapKey: (key, value) => ({ at: value.at, job_id: key.job_id }),
+            prefix: "at",
+            keyTransformer: {
+                pack: (k) => tuple.pack([k.at, k.job_id]),
+                unpack: (buf) => {
+                    const [at, job_id] = tuple.unpack(buf);
+                    return { at: at as number, job_id: job_id as string };
+                },
+            },
+        });
+    }
+
+    /**
+     * A "partial key" subspace for range queries on the "at" index.
+     * - pack only encodes { at } (the range bound)
+     * - unpack decodes the full [at, job_id] tuple (the stored key)
+     * - shares the same prefix as the DerivedSubspace
+     */
+    function makeAtRangeSubspace(atIndex: ReturnType<typeof makeAtIndex>) {
+        return new Subspace<{ at: number }, AtKey, unknown, unknown>({
+            pack: (k) => tuple.pack([k.at]),
+            unpack: (buf) => atIndex.keyXf.unpack(buf),
+        }, atIndex.prefix);
+    }
+
+    it("getRangeAll via partial-key subspace returns derived entries", async () => {
+        const source = makeJobStore();
+        const atIndex = makeAtIndex(source);
+        const atRange = makeAtRangeSubspace(atIndex);
+
+        await source.doTransaction(async (txn) => {
+            txn.set({ job_id: "a" }, { at: 100, name: "Job A" });
+            txn.set({ job_id: "b" }, { at: 200, name: "Job B" });
+            txn.set({ job_id: "c" }, { at: 300, name: "Job C" });
+        });
+
+        // Query for jobs with at in [100, 250) via txn.at(atRange)
+        const results = await source.doTransaction(async (txn) => {
+            return txn.at(atRange).getRangeAll({ at: 100 }, { at: 250 });
+        });
+
+        // Should find jobs a (at=100) and b (at=200), not c (at=300)
+        const jobIds = results.map(([k]) => k.job_id).sort();
+        expect(jobIds).toEqual(["a", "b"]);
+    });
+
+    it("getRangeAll via partial-key subspace after value update", async () => {
+        const source = makeJobStore();
+        const atIndex = makeAtIndex(source);
+        const atRange = makeAtRangeSubspace(atIndex);
+
+        await source.doTransaction(async (txn) => {
+            txn.set({ job_id: "a" }, { at: 100, name: "Job A" });
+            txn.set({ job_id: "b" }, { at: 200, name: "Job B" });
+        });
+
+        // Move job_id "a" from at=100 to at=500 (out of range)
+        await source.doTransaction(async (txn) => {
+            txn.set({ job_id: "a" }, { at: 500, name: "Job A updated" });
+        });
+
+        const results = await source.doTransaction(async (txn) => {
+            return txn.at(atRange).getRangeAll({ at: 0 }, { at: 300 });
+        });
+
+        // Only job b remains in [0, 300)
+        expect(results).toHaveLength(1);
+        expect(results[0]![0].job_id).toBe("b");
+    });
+
+    it("direct DerivedSubspace.doTransaction also works", async () => {
+        const source = makeJobStore();
+        const atIndex = makeAtIndex(source);
+
+        await source.doTransaction(async (txn) => {
+            txn.set({ job_id: "x" }, { at: 42, name: "Job X" });
+        });
+
+        const result = await atIndex.doTransaction(async (txn) => {
+            return txn.get({ at: 42, job_id: "x" });
+        });
+
+        expect(result).toBeDefined();
+    });
+
+    it("getRangeAllStartsWith via partial-key subspace", async () => {
+        const source = makeJobStore();
+        const atIndex = makeAtIndex(source);
+        const atRange = makeAtRangeSubspace(atIndex);
+
+        await source.doTransaction(async (txn) => {
+            txn.set({ job_id: "a" }, { at: 100, name: "Job A" });
+            txn.set({ job_id: "b" }, { at: 100, name: "Job B" });
+            txn.set({ job_id: "c" }, { at: 200, name: "Job C" });
+        });
+
+        // All entries whose key starts with at=100
+        const results = await source.doTransaction(async (txn) => {
+            return txn.at(atRange).getRangeAllStartsWith({ at: 100 });
+        });
+
+        const jobIds = results.map(([k]) => k.job_id).sort();
+        expect(jobIds).toEqual(["a", "b"]);
+    });
+
+    it("source clear removes derived entries from range results", async () => {
+        const source = makeJobStore();
+        const atIndex = makeAtIndex(source);
+        const atRange = makeAtRangeSubspace(atIndex);
+
+        await source.doTransaction(async (txn) => {
+            txn.set({ job_id: "a" }, { at: 100, name: "Job A" });
+            txn.set({ job_id: "b" }, { at: 200, name: "Job B" });
+        });
+
+        await source.doTransaction(async (txn) => {
+            txn.clear({ job_id: "a" });
+        });
+
+        const results = await source.doTransaction(async (txn) => {
+            return txn.at(atRange).getRangeAll({ at: 0 }, { at: 999 });
+        });
+
+        expect(results).toHaveLength(1);
+        expect(results[0]![0].job_id).toBe("b");
+    });
+});
