@@ -108,6 +108,18 @@ const last3 = await store.doTransaction(async (txn) => {
 });
 ```
 
+#### `txn.getRange(start: K, end: K, opts?: RangeOptions): AsyncGenerator<[K, V]>`
+
+Async generator form of `getRangeAll`. Same arguments and conflict tracking, but yields entries one at a time — useful for `for await...of` loops.
+
+```ts
+await store.doTransaction(async (txn) => {
+  for await (const [key, val] of txn.getRange({ id: 1 }, { id: 10 })) {
+    console.log(key, val);
+  }
+});
+```
+
 #### `txn.getRangeAllStartsWith(prefix: K, opts?: RangeOptions): [K, V][]`
 
 Return all key/value pairs whose packed key begins with the packed form of `prefix`. This mirrors FoundationDB's `getRangeStartsWith` — the exclusive upper bound is computed automatically via `strinc` (increment the last non-`0xff` byte of the packed prefix).
@@ -123,6 +135,50 @@ const results = await store.doTransaction(async (txn) => {
 // First 5 matching entries in reverse order
 const last5 = await store.doTransaction(async (txn) => {
   return txn.getRangeAllStartsWith({ id: 1 }, { reverse: true, limit: 5 });
+});
+```
+
+#### `txn.getRangeStartsWith(prefix: K, opts?: RangeOptions): AsyncGenerator<[K, V]>`
+
+Async generator form of `getRangeAllStartsWith`. Same arguments and conflict tracking, but yields entries one at a time.
+
+```ts
+await store.doTransaction(async (txn) => {
+  for await (const [key, val] of txn.getRangeStartsWith({ id: 1 })) {
+    console.log(key, val);
+  }
+});
+```
+
+#### `txn.at(subspace): ITransaction`
+
+Return a scoped transaction that shares this transaction's read-operations, write-buffer, and version map but uses a different `Subspace` for key/value encoding. This mirrors FoundationDB's `txn.at(subspace)` — all reads and writes through the scoped transaction participate in the same atomic commit and conflict detection.
+
+Throws if the subspace belongs to a different store.
+
+```ts
+const orders = new Subspace<OrderKey, OrderKey, OrderVal, OrderVal>(orderTransformer);
+
+await store.doTransaction(async (txn) => {
+  txn.set({ userId: 1 }, { name: "Alice" });
+  txn.at(orders).set({ orderId: 1 }, { item: "Widget", total: 42 });
+  // Both writes commit atomically.
+});
+```
+
+#### `txn.snapshot(): ITransaction`
+
+Return a snapshot view of this transaction. Reads through the returned transaction resolve values at the same snapshot version and see the same write buffer (RYOW), but they are **not** recorded as read operations — so they will never cause conflicts. Writes still go into the shared write buffer and are committed normally.
+
+This mirrors FoundationDB's `txn.snapshot` property.
+
+```ts
+await store.doTransaction(async (txn) => {
+  // This read won't cause a conflict even if key 1 is modified concurrently.
+  const val = txn.snapshot().get({ id: 1 });
+
+  // Normal reads still track conflicts as usual.
+  const other = txn.get({ id: 2 });
 });
 ```
 
@@ -182,7 +238,7 @@ console.log(admin); // { id: 1, name: "Alice" }
 - **Tombstone handling:** When a source key is cleared, the derived store looks up the previous value to derive the old index key and tombstones it.
 - **Key migration:** When a value update changes the derived key (e.g. a category change), the old derived key is tombstoned and the new one is written.
 - **Read-only:** `doTransaction` throws if any writes are attempted.
-- **Reads:** All `Transaction` read methods (`get`, `getRangeAll`, `getRangeAllStartsWith`) work on the derived store.
+- **Reads:** All `Transaction` read methods (`get`, `getRangeAll`, `getRangeAllStartsWith`, `getRange`, `getRangeStartsWith`) work on the derived store.
 
 ---
 
@@ -271,18 +327,20 @@ The conflict check and write application happen in a single synchronous block wi
 ```
 src/
   types.ts              # TOMBSTONE, VersionedEntry, TransactionOptions,
-                        # ReadOperation union, ConflictError
+                        # ReadOperation union, ConflictError, ITransaction
   OrderedMap.ts         # Sorted map — O(1) get, O(log n) insert
-  Transaction.ts        # Transaction — get, set, clear,
-                        # getRangeAll, getRangeAllStartsWith
+  Transaction.ts        # Transaction — get, set, clear, getRangeAll,
+                        # getRangeAllStartsWith, getRange, getRangeStartsWith,
+                        # at, snapshot
   MVCCStore.ts          # MVCCStore — doTransaction, conflict detection,
                         # version trimming, retry loop, onCommit hooks
   DerivedMVCCStore.ts   # DerivedMVCCStore — read-only secondary index
-  Subspace.ts           # Key/value codec base class
+  subspace.ts           # Key/value codec base class
   index.ts              # Barrel re-exports (MVCCCore namespace)
 tests/
-  mvccStore.test.ts         # Core store tests (vitest)
-  derivedMVCCStore.test.ts  # DerivedMVCCStore tests
+  mvccStore.test.ts          # Core store tests (vitest)
+  derivedMVCCStore.test.ts   # DerivedMVCCStore tests
+  scopedTransaction.test.ts  # Scoped transaction (at) tests
 ```
 
 ## Development

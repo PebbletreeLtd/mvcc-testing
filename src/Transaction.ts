@@ -174,6 +174,30 @@ export class Transaction<Kin, KOut, Vin, VOut> implements ITransaction<Kin, KOut
     }
 
     /**
+     * Async generator form of `getRangeAll`.  Yields `[KOut, VOut]` pairs one
+     * at a time for the half-open range `[start, end)`.  Conflict tracking is
+     * identical to `getRangeAll`.
+     */
+    async *getRange(start: Kin, end: Kin, opts?: RangeOptions): AsyncGenerator<[KOut, VOut]> {
+        const results = this.getRangeAll(start, end, opts);
+        for (const entry of results) {
+            yield entry;
+        }
+    }
+
+    /**
+     * Async generator form of `getRangeAllStartsWith`.  Yields `[KOut, VOut]`
+     * pairs one at a time for all keys matching `prefix`.  Conflict tracking
+     * is identical to `getRangeAllStartsWith`.
+     */
+    async *getRangeStartsWith(prefix: Kin, opts?: RangeOptions): AsyncGenerator<[KOut, VOut]> {
+        const results = this.getRangeAllStartsWith(prefix, opts);
+        for (const entry of results) {
+            yield entry;
+        }
+    }
+
+    /**
      * Shared implementation for `getRangeAll` and `getRangeAllStartsWith`.
      * Operates on pre-computed hex-encoded key bounds.
      */

@@ -130,6 +130,15 @@ export interface ITransaction<Kin, KOut, Vin, VOut> {
         prefix: Kin,
         opts?: RangeOptions,
     ): [KOut, VOut][] | Promise<[KOut, VOut][]>;
+    getRange(
+        start: Kin,
+        end: Kin,
+        opts?: RangeOptions,
+    ): AsyncGenerator<[KOut, VOut]>;
+    getRangeStartsWith(
+        prefix: Kin,
+        opts?: RangeOptions,
+    ): AsyncGenerator<[KOut, VOut]>;
     at<SubKeyIn, SubKeyOut, SubValIn, SubValOut>(
         subspace: Subspace<SubKeyIn, SubKeyOut, SubValIn, SubValOut>,
     ): ITransaction<SubKeyIn, SubKeyOut, SubValIn, SubValOut>;

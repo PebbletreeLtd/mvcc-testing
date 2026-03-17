@@ -929,3 +929,116 @@ describe("snapshot()", () => {
         expect(result).toEqual({ name: "Alice" });
     });
 });
+
+// ---------------------------------------------------------------------------
+// getRange / getRangeStartsWith (async generators)
+// ---------------------------------------------------------------------------
+
+describe("getRange (async generator)", () => {
+    it("yields entries within [start, end) in sorted order", async () => {
+        const store = makeStore();
+
+        await store.doTransaction(async (txn) => {
+            txn.set({ id: 1 }, { name: "Alice" });
+            txn.set({ id: 3 }, { name: "Charlie" });
+            txn.set({ id: 5 }, { name: "Eve" });
+        });
+
+        const result: [Key, Val][] = [];
+        await store.doTransaction(async (txn) => {
+            for await (const entry of txn.getRange({ id: 1 }, { id: 6 })) {
+                result.push(entry);
+            }
+        });
+
+        expect(result.map(([k]) => k.id)).toEqual([1, 3, 5]);
+        expect(result.map(([, v]) => v.name)).toEqual(["Alice", "Charlie", "Eve"]);
+    });
+
+    it("supports reverse and limit options", async () => {
+        const store = makeStore();
+
+        await store.doTransaction(async (txn) => {
+            txn.set({ id: 1 }, { name: "Alice" });
+            txn.set({ id: 2 }, { name: "Bob" });
+            txn.set({ id: 3 }, { name: "Charlie" });
+            txn.set({ id: 4 }, { name: "Dana" });
+        });
+
+        const result: [Key, Val][] = [];
+        await store.doTransaction(async (txn) => {
+            for await (const entry of txn.getRange({ id: 1 }, { id: 5 }, { reverse: true, limit: 2 })) {
+                result.push(entry);
+            }
+        });
+
+        expect(result.map(([k]) => k.id)).toEqual([4, 3]);
+    });
+
+    it("conflicts are detected (same as getRangeAll)", async () => {
+        const store = makeStore();
+
+        await store.doTransaction(async (txn) => {
+            txn.set({ id: 1 }, { name: "Alice" });
+        });
+
+        let attempts = 0;
+        await store.doTransaction(async (txn) => {
+            attempts++;
+            // Consume the generator to trigger conflict tracking.
+            for await (const _ of txn.getRange({ id: 1 }, { id: 10 })) {
+                // just consume
+            }
+
+            if (attempts === 1) {
+                await store.doTransaction(async (inner) => {
+                    inner.set({ id: 2 }, { name: "Bob" });
+                });
+            }
+        });
+
+        expect(attempts).toBeGreaterThan(1);
+    });
+});
+
+describe("getRangeStartsWith (async generator)", () => {
+    it("yields entries matching the prefix", async () => {
+        const store = makeStore();
+
+        await store.doTransaction(async (txn) => {
+            txn.set({ id: 1 }, { name: "Alice" });
+            txn.set({ id: 2 }, { name: "Bob" });
+            txn.set({ id: 3 }, { name: "Charlie" });
+        });
+
+        const result: [Key, Val][] = [];
+        await store.doTransaction(async (txn) => {
+            for await (const entry of txn.getRangeStartsWith({ id: 2 })) {
+                result.push(entry);
+            }
+        });
+
+        expect(result).toHaveLength(1);
+        expect(result[0]![0].id).toBe(2);
+        expect(result[0]![1].name).toBe("Bob");
+    });
+
+    it("supports reverse option", async () => {
+        const store = makeStore();
+
+        await store.doTransaction(async (txn) => {
+            txn.set({ id: 1 }, { name: "Alice" });
+            txn.set({ id: 2 }, { name: "Bob" });
+        });
+
+        const result: [Key, Val][] = [];
+        await store.doTransaction(async (txn) => {
+            for await (const entry of txn.getRangeStartsWith({ id: 1 }, { reverse: true })) {
+                result.push(entry);
+            }
+        });
+
+        expect(result).toHaveLength(1);
+        expect(result[0]![0].id).toBe(1);
+    });
+});
