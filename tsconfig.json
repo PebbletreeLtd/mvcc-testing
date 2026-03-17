@@ -24,7 +24,7 @@
         "ignoreDeprecations": "5.0",
         "noUnusedLocals": true,
         "declaration": true,
-        "allowSyntheticDefaultImports": true,
+        "allowSyntheticDefaultImports": false,
         "experimentalDecorators": true,
         "allowUnusedLabels": true,
         "noUnusedParameters": true,

@@ -3,7 +3,7 @@
 // it also includes kv transformers, so a subspace here will also automatically
 // encode and decode keys and values.
 
-import tuple from "fdb-tuple"
+import * as tuple from "fdb-tuple"
 import { Transformer, VersionedEntry } from "./types"
 import { OrderedMap } from "./OrderedMap"
 
