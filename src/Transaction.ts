@@ -270,6 +270,27 @@ export class Transaction<Kin, KOut, Vin, VOut> implements ITransaction<Kin, KOut
         );
     }
 
+    /**
+     * Return a snapshot view of this transaction.  Reads through the returned
+     * transaction resolve values at the same snapshot version and see the same
+     * write buffer, but they are **not** recorded as read operations — so they
+     * will never cause conflicts.  Writes still go into the shared write buffer
+     * and are committed normally.
+     *
+     * This mirrors FoundationDB's `txn.snapshot` property.
+     */
+    snapshot(): ITransaction<Kin, KOut, Vin, VOut> {
+        // Pass a throwaway readOps array so reads aren't tracked.
+        return new Transaction<Kin, KOut, Vin, VOut>(
+            this.readVersion,
+            this.subspace,
+            this.ryow,
+            [],               // discarded — reads won't cause conflicts
+            this._writeBuffer, // shared — writes are committed
+            this.versionMap,   // shared — reads resolve the same data
+        );
+    }
+
     // ---------------------------------------------------------------------------
     // Internal — exposed for the commit phase in MVCCStore
     // ---------------------------------------------------------------------------

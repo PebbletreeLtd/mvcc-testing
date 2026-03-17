@@ -133,6 +133,7 @@ export interface ITransaction<Kin, KOut, Vin, VOut> {
     at<SubKeyIn, SubKeyOut, SubValIn, SubValOut>(
         subspace: Subspace<SubKeyIn, SubKeyOut, SubValIn, SubValOut>,
     ): ITransaction<SubKeyIn, SubKeyOut, SubValIn, SubValOut>;
+    snapshot(): ITransaction<Kin, KOut, Vin, VOut>;
 }
 
 

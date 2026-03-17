@@ -797,3 +797,135 @@ describe("error handling", () => {
         expect(store.version).toBe(1);
     });
 });
+
+// ---------------------------------------------------------------------------
+// snapshot() — conflict-free reads
+// ---------------------------------------------------------------------------
+
+describe("snapshot()", () => {
+    it("snapshot reads return the same values as normal reads", async () => {
+        const store = makeStore();
+
+        await store.doTransaction(async (txn) => {
+            txn.set({ id: 1 }, { name: "Alice" });
+        });
+
+        const result = await store.doTransaction(async (txn) => {
+            return txn.snapshot().get({ id: 1 });
+        });
+
+        expect(result).toEqual({ name: "Alice" });
+    });
+
+    it("snapshot reads do not cause conflicts", async () => {
+        const store = makeStore();
+
+        await store.doTransaction(async (txn) => {
+            txn.set({ id: 1 }, { name: "Alice" });
+        });
+
+        let attempts = 0;
+        await store.doTransaction(async (txn) => {
+            attempts++;
+
+            // Read via snapshot — should NOT record a conflict.
+            txn.snapshot().get({ id: 1 });
+
+            if (attempts === 1) {
+                // Concurrently modify the same key.
+                await store.doTransaction(async (inner) => {
+                    inner.set({ id: 1 }, { name: "Bob" });
+                });
+            }
+
+            // Write something so the transaction commits.
+            txn.set({ id: 2 }, { name: "Charlie" });
+        });
+
+        // No retry — snapshot read doesn't conflict.
+        expect(attempts).toBe(1);
+    });
+
+    it("normal reads on the same txn still cause conflicts", async () => {
+        const store = makeStore();
+
+        await store.doTransaction(async (txn) => {
+            txn.set({ id: 1 }, { name: "Alice" });
+            txn.set({ id: 2 }, { name: "Bob" });
+        });
+
+        let attempts = 0;
+        await store.doTransaction(async (txn) => {
+            attempts++;
+
+            // Snapshot read on key 1 — no conflict tracking.
+            txn.snapshot().get({ id: 1 });
+            // Normal read on key 2 — conflict tracked.
+            txn.get({ id: 2 });
+
+            if (attempts === 1) {
+                // Modify key 2 concurrently.
+                await store.doTransaction(async (inner) => {
+                    inner.set({ id: 2 }, { name: "Bob2" });
+                });
+            }
+        });
+
+        // Should retry because of the normal read on key 2.
+        expect(attempts).toBeGreaterThan(1);
+    });
+
+    it("snapshot range scans do not cause conflicts", async () => {
+        const store = makeStore();
+
+        await store.doTransaction(async (txn) => {
+            txn.set({ id: 1 }, { name: "Alice" });
+            txn.set({ id: 3 }, { name: "Charlie" });
+        });
+
+        let attempts = 0;
+        await store.doTransaction(async (txn) => {
+            attempts++;
+
+            // Range scan via snapshot.
+            txn.snapshot().getRangeAll({ id: 1 }, { id: 10 });
+
+            if (attempts === 1) {
+                // Add a key in the range concurrently.
+                await store.doTransaction(async (inner) => {
+                    inner.set({ id: 2 }, { name: "Bob" });
+                });
+            }
+
+            txn.set({ id: 5 }, { name: "Eve" });
+        });
+
+        expect(attempts).toBe(1);
+    });
+
+    it("writes through snapshot() are committed normally", async () => {
+        const store = makeStore();
+
+        await store.doTransaction(async (txn) => {
+            txn.snapshot().set({ id: 1 }, { name: "Alice" });
+        });
+
+        const result = await store.doTransaction(async (txn) => {
+            return txn.get({ id: 1 });
+        });
+
+        expect(result).toEqual({ name: "Alice" });
+    });
+
+    it("snapshot sees the local write buffer (RYOW)", async () => {
+        const store = makeStore();
+
+        const result = await store.doTransaction(async (txn) => {
+            txn.set({ id: 1 }, { name: "Alice" });
+            // Snapshot shares the write buffer, so RYOW works.
+            return txn.snapshot().get({ id: 1 });
+        });
+
+        expect(result).toEqual({ name: "Alice" });
+    });
+});
