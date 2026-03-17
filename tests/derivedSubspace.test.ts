@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { MVCCCore } from "../src";
-const { MVCCStore, DerivedMVCCStore, Subspace } = MVCCCore;
+const { Store, DerivedSubspace, Subspace } = MVCCCore;
 import tuple from "fdb-tuple";
 
 // ---------------------------------------------------------------------------
@@ -14,7 +14,7 @@ type Val = { name: string; category?: string; count?: number };
 type IKey = { category: string };
 
 function makeStore(prefix?: string) {
-    return new MVCCStore<Key, Key, Val, Val>({
+    return new Store<Key, Key, Val, Val>({
         prefix,
         keyTransformer: {
             pack: (key) => tuple.pack([key.id]),
@@ -27,8 +27,8 @@ function makeStore(prefix?: string) {
     });
 }
 
-function makeDerived(source: InstanceType<typeof MVCCStore<Key, Key, Val, Val>>) {
-    return new DerivedMVCCStore<Key, Key, Val, Val, IKey, IKey>({
+function makeDerived(source: InstanceType<typeof Store<Key, Key, Val, Val>>) {
+    return new DerivedSubspace<Key, Key, Val, Val, IKey, IKey>({
         source,
         mapKey: (_key, value) => ({ category: value.category ?? "none" }),
         keyTransformer: {
@@ -49,7 +49,7 @@ function makeDerived(source: InstanceType<typeof MVCCStore<Key, Key, Val, Val>>)
 describe.each([
     { label: "no prefix", prefix: undefined as string | undefined },
     { label: "with prefix", prefix: "items" },
-])("DerivedMVCCStore ($label)", ({ prefix }) => {
+])('DerivedSubspace ($label)', ({ prefix }) => {
     it("reflects source writes as projected entries", async () => {
         const source = makeStore(prefix);
         const derived = makeDerived(source);
@@ -170,7 +170,7 @@ describe.each([
         // Use a derived store that indexes by id (numeric as string) so we
         // can do meaningful range queries.
         type NK = { idStr: string };
-        const derived = new DerivedMVCCStore<Key, Key, Val, Val, NK, NK>({
+        const derived = new DerivedSubspace<Key, Key, Val, Val, NK, NK>({
             source,
             mapKey: (key) => ({ idStr: String(key.id) }),
             keyTransformer: {
@@ -204,7 +204,7 @@ describe.each([
             derived.doTransaction(async (txn) => {
                 (txn as any).clear({ category: "admin" });
             }),
-        ).rejects.toThrow("DerivedMVCCStore is read-only");
+        ).rejects.toThrow("DerivedSubspace is read-only");
     });
 
     it("handles multiple source writes in one transaction", async () => {
@@ -253,7 +253,7 @@ describe.each([
 // Multi-subspace test (requires prefix to distinguish key spaces)
 // ---------------------------------------------------------------------------
 
-describe("DerivedMVCCStore (multi-subspace)", () => {
+describe('DerivedSubspace (multi-subspace)', () => {
     it("does not crash when source store has writes from other subspaces", async () => {
         const source = makeStore("items");
         const derived = makeDerived(source);
@@ -289,7 +289,7 @@ describe("DerivedMVCCStore (multi-subspace)", () => {
 // txn.at(derivedStore) — reading derived entries from a source transaction
 // ---------------------------------------------------------------------------
 
-describe("DerivedMVCCStore via txn.at()", () => {
+describe('DerivedSubspace via txn.at()', () => {
     it("can read derived entries through txn.at(derivedStore)", async () => {
         const source = makeStore("items");
         const derived = makeDerived(source);
@@ -311,7 +311,7 @@ describe("DerivedMVCCStore via txn.at()", () => {
         const source = makeStore("items");
 
         type NK = { idStr: string };
-        const derived = new DerivedMVCCStore<Key, Key, Val, Val, NK, NK>({
+        const derived = new DerivedSubspace<Key, Key, Val, Val, NK, NK>({
             source,
             mapKey: (key) => ({ idStr: String(key.id) }),
             prefix: "byId",

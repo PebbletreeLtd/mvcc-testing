@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { MVCCCore } from "../src";
-const { MVCCStore, ConflictError } = MVCCCore;
+const { Store, ConflictError } = MVCCCore;
 import tuple from "fdb-tuple";
 // ---------------------------------------------------------------------------
 // Helpers
@@ -10,7 +10,7 @@ type Key = { id: number };
 type Val = { name: string; count?: number };
 
 function makeStore(prefix?: string) {
-    return new MVCCStore<Key, Key, Val, Val>({
+    return new Store<Key, Key, Val, Val>({
         prefix,
         keyTransformer: {
             pack: (key) => {

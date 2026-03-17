@@ -1,4 +1,4 @@
-import { MVCCStore } from "./MVCCStore";
+import { Store } from "./Store";
 import Subspace from "./subspace";
 import {
     TOMBSTONE,
@@ -40,11 +40,11 @@ export class DerivedMVCCStore<
     FKIn,
     FKOut extends FKIn,
 > extends Subspace<FKIn, FKOut, never, unknown> {
-    private readonly _source: MVCCStore<Kin, KOut, Vin, VOut>;
+    private readonly _source: Store<Kin, KOut, Vin, VOut>;
     private readonly _mapKey: (key: KOut, value: VOut) => FKIn;
 
     constructor(args: {
-        source: MVCCStore<Kin, KOut, Vin, VOut>;
+        source: Store<Kin, KOut, Vin, VOut>;
         /** Project a source key/value pair into the derived key. */
         mapKey: (key: KOut, value: VOut) => FKIn;
         /** Transformer for the derived key type. */

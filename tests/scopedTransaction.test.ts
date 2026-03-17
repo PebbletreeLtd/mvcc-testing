@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { MVCCCore } from "../src";
-const { MVCCStore, Subspace, ConflictError } = MVCCCore;
+const { Store, Subspace, ConflictError } = MVCCCore;
 import tuple from "fdb-tuple";
 
 // ---------------------------------------------------------------------------
@@ -15,7 +15,7 @@ type OrderVal = { item: string; total: number };
 
 /** Store whose root key space is prefixed with "users". */
 function makeStore() {
-    return new MVCCStore<UserKey, UserKey, UserVal, UserVal>({
+    return new Store<UserKey, UserKey, UserVal, UserVal>({
         prefix: "users",
         keyTransformer: {
             pack: (key) => tuple.pack([key.userId]),
