@@ -16,11 +16,12 @@ type OrderVal = { item: string; total: number };
 /** Store whose root key space is prefixed with "users". */
 function makeStore() {
     return new MVCCStore<UserKey, UserKey, UserVal, UserVal>({
+        prefix: "users",
         keyTransformer: {
-            pack: (key) => tuple.pack(["users", key.userId]),
+            pack: (key) => tuple.pack([key.userId]),
             unpack: (buf) => {
                 const parts = tuple.unpack(buf);
-                return { userId: parts[1] as number };
+                return { userId: parts[0] as number };
             },
         },
     });
@@ -29,12 +30,12 @@ function makeStore() {
 /** A plain Subspace (no store) for an "orders" namespace. */
 function makeOrderSubspace() {
     return new Subspace<OrderKey, OrderKey, OrderVal, OrderVal>({
-        pack: (key) => tuple.pack(["orders", key.orderId]),
+        pack: (key) => tuple.pack([key.orderId]),
         unpack: (buf) => {
             const parts = tuple.unpack(buf);
-            return { orderId: parts[1] as number };
+            return { orderId: parts[0] as number };
         },
-    });
+    }, "orders");
 }
 
 // ---------------------------------------------------------------------------

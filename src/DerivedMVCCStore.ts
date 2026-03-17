@@ -48,8 +48,10 @@ export class DerivedMVCCStore<
         mapKey: (key: KOut, value: VOut) => FKIn;
         /** Transformer for the derived key type. */
         keyTransformer: Transformer<FKIn, FKOut>;
+        /** Optional prefix for the derived key space. */
+        prefix?: string;
     }) {
-        super({ keyTransformer: args.keyTransformer });
+        super({ keyTransformer: args.keyTransformer, prefix: args.prefix });
 
         this._source = args.source;
         this._mapKey = args.mapKey;
@@ -105,6 +107,9 @@ export class DerivedMVCCStore<
             const latest = entries[entries.length - 1]!;
             if (latest.value === TOMBSTONE) continue;
 
+            // Skip keys that don't belong to the source subspace.
+            if (!this._source.contains(serialisedKey)) continue;
+
             const srcKey = this._decodeSourceKey(serialisedKey);
             const srcValue = this._decodeSourceValue(latest.value);
 
@@ -138,6 +143,9 @@ export class DerivedMVCCStore<
         this.currentVersion = commitVersion;
 
         for (const [serialisedKey, value] of writes) {
+            // Skip keys that don't belong to the source subspace.
+            if (!this._source.contains(serialisedKey)) continue;
+
             const srcKey = this._decodeSourceKey(serialisedKey);
 
             if (value === TOMBSTONE) {

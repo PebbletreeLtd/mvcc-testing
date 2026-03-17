@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { MVCCCore } from "../src";
-const { MVCCStore, DerivedMVCCStore } = MVCCCore;
+const { MVCCStore, DerivedMVCCStore, Subspace } = MVCCCore;
 import tuple from "fdb-tuple";
 
 // ---------------------------------------------------------------------------
@@ -13,8 +13,9 @@ type Val = { name: string; category?: string; count?: number };
 /** Index key — just the category string. */
 type IKey = { category: string };
 
-function makeStore() {
+function makeStore(prefix?: string) {
     return new MVCCStore<Key, Key, Val, Val>({
+        prefix,
         keyTransformer: {
             pack: (key) => tuple.pack([key.id]),
             unpack: (buffer) => {
@@ -45,9 +46,12 @@ function makeDerived(source: InstanceType<typeof MVCCStore<Key, Key, Val, Val>>)
 // Basic derived store behaviour
 // ---------------------------------------------------------------------------
 
-describe("DerivedMVCCStore", () => {
+describe.each([
+    { label: "no prefix", prefix: undefined as string | undefined },
+    { label: "with prefix", prefix: "items" },
+])("DerivedMVCCStore ($label)", ({ prefix }) => {
     it("reflects source writes as projected entries", async () => {
-        const source = makeStore();
+        const source = makeStore(prefix);
         const derived = makeDerived(source);
 
         await source.doTransaction(async (txn) => {
@@ -62,7 +66,7 @@ describe("DerivedMVCCStore", () => {
     });
 
     it("backfills existing source data on construction", async () => {
-        const source = makeStore();
+        const source = makeStore(prefix);
 
         await source.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice", category: "admin" });
@@ -84,7 +88,7 @@ describe("DerivedMVCCStore", () => {
     });
 
     it("source clear → derived key becomes undefined", async () => {
-        const source = makeStore();
+        const source = makeStore(prefix);
         const derived = makeDerived(source);
 
         await source.doTransaction(async (txn) => {
@@ -103,7 +107,7 @@ describe("DerivedMVCCStore", () => {
     });
 
     it("value update that changes indexed field moves the index entry", async () => {
-        const source = makeStore();
+        const source = makeStore(prefix);
         const derived = makeDerived(source);
 
         await source.doTransaction(async (txn) => {
@@ -127,7 +131,7 @@ describe("DerivedMVCCStore", () => {
     });
 
     it("value update that does NOT change indexed field updates in-place", async () => {
-        const source = makeStore();
+        const source = makeStore(prefix);
         const derived = makeDerived(source);
 
         await source.doTransaction(async (txn) => {
@@ -147,7 +151,7 @@ describe("DerivedMVCCStore", () => {
     });
 
     it("version tracks the source version", async () => {
-        const source = makeStore();
+        const source = makeStore(prefix);
         const derived = makeDerived(source);
 
         expect(derived.version).toBe(0);
@@ -161,7 +165,7 @@ describe("DerivedMVCCStore", () => {
     });
 
     it("getRangeAll works on the derived store", async () => {
-        const source = makeStore();
+        const source = makeStore(prefix);
 
         // Use a derived store that indexes by id (numeric as string) so we
         // can do meaningful range queries.
@@ -192,7 +196,7 @@ describe("DerivedMVCCStore", () => {
     });
 
     it("throws when writes are attempted on the derived store", async () => {
-        const source = makeStore();
+        const source = makeStore(prefix);
         const derived = makeDerived(source);
 
         // clear() is callable at runtime even though set() is blocked by `never`.
@@ -204,7 +208,7 @@ describe("DerivedMVCCStore", () => {
     });
 
     it("handles multiple source writes in one transaction", async () => {
-        const source = makeStore();
+        const source = makeStore(prefix);
         const derived = makeDerived(source);
 
         await source.doTransaction(async (txn) => {
@@ -228,7 +232,7 @@ describe("DerivedMVCCStore", () => {
     });
 
     it("handles source clear of a key that was never set (no-op)", async () => {
-        const source = makeStore();
+        const source = makeStore(prefix);
         const derived = makeDerived(source);
 
         // Clearing a non-existent key shouldn't crash the derived store.
@@ -242,5 +246,41 @@ describe("DerivedMVCCStore", () => {
         });
 
         expect(result).toBeUndefined();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Multi-subspace test (requires prefix to distinguish key spaces)
+// ---------------------------------------------------------------------------
+
+describe("DerivedMVCCStore (multi-subspace)", () => {
+    it("does not crash when source store has writes from other subspaces", async () => {
+        const source = makeStore("items");
+        const derived = makeDerived(source);
+
+        // Define a second subspace with a completely different key encoding.
+        type OrderKey = { orderId: number };
+        type OrderVal = { item: string; total: number };
+        const orders = new Subspace<OrderKey, OrderKey, OrderVal, OrderVal>({
+            pack: (key) => tuple.pack([key.orderId]),
+            unpack: (buf) => {
+                const parts = tuple.unpack(buf);
+                return { orderId: parts[0] as number };
+            },
+        }, "orders");
+
+        // Write to both the root key space AND the orders subspace in one txn.
+        // The post-commit hook will receive writes from both encoders.
+        await source.doTransaction(async (txn) => {
+            txn.set({ id: 1 }, { name: "Alice", category: "admin" });
+            txn.at(orders).set({ orderId: 99 }, { item: "Widget", total: 42 });
+        });
+
+        // The derived store should have projected the root write and ignored
+        // the orders-subspace write.
+        const admin = await derived.doTransaction(async (txn) => {
+            return txn.get({ category: "admin" });
+        });
+        expect(admin).toBeDefined();
     });
 });

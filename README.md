@@ -11,12 +11,19 @@ npm install @pebbletree/mvcc-testing
 ## Quick start
 
 ```ts
-import { MVCCStore } from "@pebbletree/mvcc-testing";
+import { MVCCCore } from "@pebbletree/mvcc-testing";
+const { MVCCStore } = MVCCCore;
 
 type Key = { id: number };
 type Val = { name: string; count: number };
 
-const store = new MVCCStore<Key, Val>();
+const store = new MVCCStore<Key, Key, Val, Val>({
+  keyTransformer: {
+    pack: (k) => JSON.stringify(k),
+    unpack: (buf) => JSON.parse(buf.toString()),
+  },
+  prefix: "myapp",   // optional — isolates keys under a namespace
+});
 
 // All reads and writes happen inside a transaction callback.
 await store.doTransaction(async (txn) => {
@@ -34,9 +41,34 @@ console.log(result); // { name: "Alice", count: 0 }
 
 ## API
 
-### `MVCCStore<K, V>`
+### `Subspace<KeyIn, KeyOut, ValIn, ValOut>`
 
-The top-level store. `K` is the key type and `V` is the value type. Keys must be JSON-serialisable — they are deterministically serialised via [`json-stable-stringify`](https://github.com/ljharb/json-stable-stringify) so that structurally identical objects always resolve to the same internal map entry.
+Base class providing key/value codec with an optional **prefix**. Both `MVCCStore` and `DerivedMVCCStore` extend `Subspace`.
+
+When a `prefix` string is supplied, it is [tuple-packed](https://github.com/nicktindall/fdb-tuple) and automatically **prepended** to every key in `packKey()` and **stripped** in `unpackKey()`. This gives each store its own isolated key namespace — the same mechanism FoundationDB uses for directory/subspace partitioning.
+
+#### `subspace.contains(serialisedKeyHex): boolean`
+
+Return `true` if the hex-encoded serialised key starts with this subspace's tuple-packed prefix. Always returns `true` when no prefix is set.
+
+```ts
+const sub = new Subspace(transformer, "users");
+sub.contains(someHexKey); // true if the key lives under the "users" prefix
+```
+
+#### `subspace.packKey(key): string | Buffer`
+
+Pack a key using the transformer, prepending the prefix bytes if set.
+
+#### `subspace.unpackKey(buf): KeyOut`
+
+Strip the prefix bytes (if set) and unpack via the transformer. **Throws** if the buffer doesn't start with the expected prefix.
+
+---
+
+### `MVCCStore<Kin, KOut, Vin, VOut>`
+
+The top-level store. Extends `Subspace`. Keys must be JSON-serialisable — they are deterministically serialised via [`json-stable-stringify`](https://github.com/ljharb/json-stable-stringify) so that structurally identical objects always resolve to the same internal map entry.
 
 #### `store.doTransaction<R>(callback, options?): Promise<R>`
 
@@ -50,7 +82,14 @@ const value = await store.doTransaction(async (txn) => {
 });
 ```
 
-##### Options (`TransactionOptions`)
+##### Constructor options
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `keyTransformer` | `Transformer<Kin, KOut>` | _(required)_ | Pack/unpack functions for the key type. |
+| `prefix` | `string` | `undefined` | Optional namespace prefix. Tuple-packed and prepended to every key. |
+
+##### Transaction options (`TransactionOptions`)
 
 | Option | Type | Default | Description |
 |---|---|---|---|
@@ -63,25 +102,25 @@ The current commit version (monotonically increasing). Useful for diagnostics an
 
 ---
 
-### `Transaction<K, V>`
+### `Transaction<Kin, KOut, Vin, VOut>`
 
 Provided to the `doTransaction` callback. All operations are scoped to a point-in-time snapshot.
 
-#### `txn.get(key: K): V | undefined`
+#### `txn.get(key: Kin): VOut | undefined`
 
 Read the value for `key`. Returns `undefined` if the key has never been set or has been cleared.
 
 When `readYourOwnWrites` is enabled (default), buffered writes from earlier in the same transaction are visible. When disabled, reads always return the snapshot value.
 
-#### `txn.set(key: K, value: V): void`
+#### `txn.set(key: Kin, value: Vin): void`
 
 Buffer a write. The value is not visible to other transactions until the transaction commits.
 
-#### `txn.clear(key: K): void`
+#### `txn.clear(key: Kin): void`
 
 Mark a key as deleted. After commit, `get` will return `undefined` for this key.
 
-#### `txn.getRangeAll(start: K, end: K, opts?: RangeOptions): [K, V][]`
+#### `txn.getRangeAll(start: Kin, end: Kin, opts?: RangeOptions): [KOut, VOut][]`
 
 Return all key/value pairs whose key falls within the half-open interval `[start, end)` — i.e. `key >= start` and `key < end`. Keys are compared using the transformer's packed byte order, matching FoundationDB range-read semantics.
 
@@ -108,7 +147,7 @@ const last3 = await store.doTransaction(async (txn) => {
 });
 ```
 
-#### `txn.getRange(start: K, end: K, opts?: RangeOptions): AsyncGenerator<[K, V]>`
+#### `txn.getRange(start: Kin, end: Kin, opts?: RangeOptions): AsyncGenerator<[KOut, VOut]>`
 
 Async generator form of `getRangeAll`. Same arguments and conflict tracking, but yields entries one at a time — useful for `for await...of` loops.
 
@@ -120,7 +159,7 @@ await store.doTransaction(async (txn) => {
 });
 ```
 
-#### `txn.getRangeAllStartsWith(prefix: K, opts?: RangeOptions): [K, V][]`
+#### `txn.getRangeAllStartsWith(prefix: Kin, opts?: RangeOptions): [KOut, VOut][]`
 
 Return all key/value pairs whose packed key begins with the packed form of `prefix`. This mirrors FoundationDB's `getRangeStartsWith` — the exclusive upper bound is computed automatically via `strinc` (increment the last non-`0xff` byte of the packed prefix).
 
@@ -138,7 +177,7 @@ const last5 = await store.doTransaction(async (txn) => {
 });
 ```
 
-#### `txn.getRangeStartsWith(prefix: K, opts?: RangeOptions): AsyncGenerator<[K, V]>`
+#### `txn.getRangeStartsWith(prefix: Kin, opts?: RangeOptions): AsyncGenerator<[KOut, VOut]>`
 
 Async generator form of `getRangeAllStartsWith`. Same arguments and conflict tracking, but yields entries one at a time.
 
@@ -157,12 +196,15 @@ Return a scoped transaction that shares this transaction's read-operations, writ
 Throws if the subspace belongs to a different store.
 
 ```ts
-const orders = new Subspace<OrderKey, OrderKey, OrderVal, OrderVal>(orderTransformer);
+const orders = new Subspace<OrderKey, OrderKey, OrderVal, OrderVal>(
+  orderTransformer,
+  "orders",   // prefix isolates order keys from user keys
+);
 
 await store.doTransaction(async (txn) => {
   txn.set({ userId: 1 }, { name: "Alice" });
   txn.at(orders).set({ orderId: 1 }, { item: "Widget", total: 42 });
-  // Both writes commit atomically.
+  // Both writes commit atomically under their respective prefixes.
 });
 ```
 
@@ -184,7 +226,7 @@ await store.doTransaction(async (txn) => {
 
 ---
 
-### `DerivedMVCCStore<Kin, KOut, Vin, VOut, FKIn, FKOut>`
+### `DerivedMVCCStore<Kin, KOut, Vin, VOut, FKIn, FKOut extends FKIn>`
 
 A read-only, automatically-maintained secondary index (derived view) over an `MVCCStore`. Every commit to the source store is synchronously projected through `mapKey` into the derived store's own version map with an empty value. Reads go through the normal MVCC transaction path, so you get snapshot isolation and conflict detection for free.
 
@@ -228,6 +270,7 @@ console.log(admin); // {}
 | `source` | `MVCCStore<Kin, KOut, Vin, VOut>` | The source store to derive from. |
 | `mapKey` | `(key: KOut, value: VOut) => FKIn` | Project a source key/value into the derived key. |
 | `keyTransformer` | `Transformer<FKIn, FKOut>` | Pack/unpack for the derived key type. |
+| `prefix` | `string` _(optional)_ | Namespace prefix for the derived key space. |
 
 #### Behaviour
 
@@ -238,6 +281,7 @@ console.log(admin); // {}
 - **Read-only:** `doTransaction` throws if any writes are attempted.
 - **Values:** The derived store doesn't carry source values — `get` and range reads return `unknown` (an empty object `{}`).
 - **Reads:** All `Transaction` read methods (`get`, `getRangeAll`, `getRangeAllStartsWith`, `getRange`, `getRangeStartsWith`) work on the derived store. The primary use case is checking key existence and performing range scans over the index.
+- **Prefix isolation:** When both the source and derived stores use a `prefix`, the derived store's post-commit hook uses `contains()` to skip keys belonging to other subspaces — so multiple subspaces can share a single source store safely.
 
 ---
 

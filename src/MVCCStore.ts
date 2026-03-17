@@ -39,8 +39,8 @@ const DEFAULT_MAX_RETRIES = 5;
  * @typeParam V - Value type.
  */
 export class MVCCStore<Kin, KOut, Vin, VOut> extends Subspace<Kin, KOut, Vin, VOut> {
-    constructor(args: { keyTransformer: Transformer<Kin, KOut> }) {
-        super(args.keyTransformer)
+    constructor(args: { keyTransformer: Transformer<Kin, KOut>, prefix?: string }) {
+        super(args.keyTransformer, args.prefix)
     }
 
 

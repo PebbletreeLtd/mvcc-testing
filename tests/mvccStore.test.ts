@@ -9,8 +9,9 @@ import tuple from "fdb-tuple";
 type Key = { id: number };
 type Val = { name: string; count?: number };
 
-function makeStore() {
+function makeStore(prefix?: string) {
     return new MVCCStore<Key, Key, Val, Val>({
+        prefix,
         keyTransformer: {
             pack: (key) => {
                 return tuple.pack([key.id]);
@@ -26,13 +27,18 @@ function makeStore() {
     });
 }
 
+describe.each([
+    { label: "no prefix", prefix: undefined as string | undefined },
+    { label: "with prefix", prefix: "test" },
+])("$label", ({ prefix }) => {
+
 // ---------------------------------------------------------------------------
 // Basic get / set / clear
 // ---------------------------------------------------------------------------
 
 describe("basic operations", () => {
     it("returns undefined for a key that was never set", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
         const result = await store.doTransaction(async (txn) => {
             return txn.get({ id: 1 });
         });
@@ -40,7 +46,7 @@ describe("basic operations", () => {
     });
 
     it("can set and then get a value in the same transaction", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
         const result = await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice" });
             return txn.get({ id: 1 });
@@ -49,7 +55,7 @@ describe("basic operations", () => {
     });
 
     it("persists values across transactions", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice" });
@@ -63,7 +69,7 @@ describe("basic operations", () => {
     });
 
     it("can overwrite a value", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice" });
@@ -81,7 +87,7 @@ describe("basic operations", () => {
     });
 
     it("clear makes a key return undefined", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice" });
@@ -99,7 +105,7 @@ describe("basic operations", () => {
     });
 
     it("clear within the same transaction hides a prior set", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         const result = await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice" });
@@ -111,7 +117,7 @@ describe("basic operations", () => {
     });
 
     it("set after clear within the same transaction restores the value", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice" });
@@ -133,7 +139,7 @@ describe("basic operations", () => {
 
 describe("key serialisation", () => {
     it("treats structurally identical object keys as the same key", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice" });
@@ -148,7 +154,7 @@ describe("key serialisation", () => {
     });
 
     it("ignores additional properties on the key — only the packed fields matter", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         // Set using a plain key.
         await store.doTransaction(async (txn) => {
@@ -171,12 +177,12 @@ describe("key serialisation", () => {
 
 describe("version", () => {
     it("starts at 0", () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
         expect(store.version).toBe(0);
     });
 
     it("increments on each write transaction commit", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice" });
@@ -190,7 +196,7 @@ describe("version", () => {
     });
 
     it("does not increment on a read-only transaction", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice" });
@@ -210,7 +216,7 @@ describe("version", () => {
 
 describe("conflict detection and retry", () => {
     it("retries on conflict and eventually succeeds", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice", count: 0 });
@@ -247,7 +253,7 @@ describe("conflict detection and retry", () => {
     });
 
     it("throws ConflictError when retries are exhausted", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice", count: 0 });
@@ -274,7 +280,7 @@ describe("conflict detection and retry", () => {
     });
 
     it("does not conflict when transactions touch different keys", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice" });
@@ -312,7 +318,7 @@ describe("conflict detection and retry", () => {
 
 describe("snapshot isolation", () => {
     it("a transaction reads a consistent snapshot even if concurrent writes happen", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "v1" });
@@ -351,7 +357,7 @@ describe("snapshot isolation", () => {
 
 describe("readYourOwnWrites option", () => {
     it("RYOW enabled (default): reads see buffered writes", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         const result = await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice" });
@@ -362,7 +368,7 @@ describe("readYourOwnWrites option", () => {
     });
 
     it("RYOW disabled: reads bypass buffered writes", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Original" });
@@ -381,7 +387,7 @@ describe("readYourOwnWrites option", () => {
     });
 
     it("RYOW disabled: reads return undefined for keys only in write buffer", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         const result = await store.doTransaction(
             async (txn) => {
@@ -407,7 +413,7 @@ describe("readYourOwnWrites option", () => {
 
 describe("getRangeAll", () => {
     it("returns entries within [start, end) in sorted order", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice" });
@@ -426,7 +432,7 @@ describe("getRangeAll", () => {
     });
 
     it("start is inclusive and end is exclusive", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 3 }, { name: "Charlie" });
@@ -443,7 +449,7 @@ describe("getRangeAll", () => {
     });
 
     it("returns empty array when no keys fall in range", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice" });
@@ -458,7 +464,7 @@ describe("getRangeAll", () => {
     });
 
     it("reverse option returns entries from high to low", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice" });
@@ -475,7 +481,7 @@ describe("getRangeAll", () => {
     });
 
     it("limit option restricts number of results", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice" });
@@ -493,7 +499,7 @@ describe("getRangeAll", () => {
     });
 
     it("reverse + limit returns the last N entries", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice" });
@@ -512,7 +518,7 @@ describe("getRangeAll", () => {
     });
 
     it("includes uncommitted writes from the same transaction (RYOW)", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice" });
@@ -529,7 +535,7 @@ describe("getRangeAll", () => {
     });
 
     it("conflicts when a new key is added in the range by another txn", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice" });
@@ -553,7 +559,7 @@ describe("getRangeAll", () => {
     });
 
     it("conflicts when a key in the range is removed by another txn", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice" });
@@ -577,7 +583,7 @@ describe("getRangeAll", () => {
     });
 
     it("does not conflict when a key outside the range is modified", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice" });
@@ -606,7 +612,7 @@ describe("getRangeAll", () => {
 
 describe("getRangeAllStartsWith", () => {
     it("returns all entries whose packed key starts with the prefix", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice" });
@@ -626,7 +632,7 @@ describe("getRangeAllStartsWith", () => {
     });
 
     it("returns empty array when no keys match the prefix", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice" });
@@ -640,7 +646,7 @@ describe("getRangeAllStartsWith", () => {
     });
 
     it("supports reverse option", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice" });
@@ -661,7 +667,7 @@ describe("getRangeAllStartsWith", () => {
     });
 
     it("supports limit option", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice" });
@@ -677,7 +683,7 @@ describe("getRangeAllStartsWith", () => {
     });
 
     it("includes uncommitted writes from the same transaction (RYOW)", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         const result = await store.doTransaction(async (txn) => {
             txn.set({ id: 5 }, { name: "Eve" });
@@ -689,7 +695,7 @@ describe("getRangeAllStartsWith", () => {
     });
 
     it("conflicts when a matching key is added by another txn", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice" });
@@ -711,7 +717,7 @@ describe("getRangeAllStartsWith", () => {
     });
 
     it("does not conflict when a key outside the prefix is modified", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice" });
@@ -740,7 +746,7 @@ describe("getRangeAllStartsWith", () => {
 
 describe("version trimming", () => {
     it("trims old versions after commit when no readers are active", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         // Write three versions of the same key, sequentially.
         for (let i = 0; i < 3; i++) {
@@ -764,7 +770,7 @@ describe("version trimming", () => {
 
 describe("error handling", () => {
     it("propagates errors thrown by the callback", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await expect(
             store.doTransaction(async () => {
@@ -774,7 +780,7 @@ describe("error handling", () => {
     });
 
     it("does not commit writes when the callback throws", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice" });
@@ -804,7 +810,7 @@ describe("error handling", () => {
 
 describe("snapshot()", () => {
     it("snapshot reads return the same values as normal reads", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice" });
@@ -818,7 +824,7 @@ describe("snapshot()", () => {
     });
 
     it("snapshot reads do not cause conflicts", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice" });
@@ -847,7 +853,7 @@ describe("snapshot()", () => {
     });
 
     it("normal reads on the same txn still cause conflicts", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice" });
@@ -876,7 +882,7 @@ describe("snapshot()", () => {
     });
 
     it("snapshot range scans do not cause conflicts", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice" });
@@ -904,7 +910,7 @@ describe("snapshot()", () => {
     });
 
     it("writes through snapshot() are committed normally", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.snapshot().set({ id: 1 }, { name: "Alice" });
@@ -918,7 +924,7 @@ describe("snapshot()", () => {
     });
 
     it("snapshot sees the local write buffer (RYOW)", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         const result = await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice" });
@@ -936,7 +942,7 @@ describe("snapshot()", () => {
 
 describe("getRange (async generator)", () => {
     it("yields entries within [start, end) in sorted order", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice" });
@@ -956,7 +962,7 @@ describe("getRange (async generator)", () => {
     });
 
     it("supports reverse and limit options", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice" });
@@ -976,7 +982,7 @@ describe("getRange (async generator)", () => {
     });
 
     it("conflicts are detected (same as getRangeAll)", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice" });
@@ -1003,7 +1009,7 @@ describe("getRange (async generator)", () => {
 
 describe("getRangeStartsWith (async generator)", () => {
     it("yields entries matching the prefix", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice" });
@@ -1024,7 +1030,7 @@ describe("getRangeStartsWith (async generator)", () => {
     });
 
     it("supports reverse option", async () => {
-        const store = makeStore();
+        const store = makeStore(prefix);
 
         await store.doTransaction(async (txn) => {
             txn.set({ id: 1 }, { name: "Alice" });
@@ -1042,3 +1048,5 @@ describe("getRangeStartsWith (async generator)", () => {
         expect(result[0]![0].id).toBe(1);
     });
 });
+
+}); // describe.each
