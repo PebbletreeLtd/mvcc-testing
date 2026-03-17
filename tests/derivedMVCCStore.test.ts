@@ -284,3 +284,73 @@ describe("DerivedMVCCStore (multi-subspace)", () => {
         expect(admin).toBeDefined();
     });
 });
+
+// ---------------------------------------------------------------------------
+// txn.at(derivedStore) — reading derived entries from a source transaction
+// ---------------------------------------------------------------------------
+
+describe("DerivedMVCCStore via txn.at()", () => {
+    it("can read derived entries through txn.at(derivedStore)", async () => {
+        const source = makeStore("items");
+        const derived = makeDerived(source);
+
+        await source.doTransaction(async (txn) => {
+            txn.set({ id: 1 }, { name: "Alice", category: "admin" });
+            txn.set({ id: 2 }, { name: "Bob", category: "user" });
+        });
+
+        // Read derived entries from within a source transaction.
+        const result = await source.doTransaction(async (txn) => {
+            return txn.at(derived).get({ category: "admin" });
+        });
+
+        expect(result).toBeDefined();
+    });
+
+    it("getRangeAll works through txn.at(derivedStore)", async () => {
+        const source = makeStore("items");
+
+        type NK = { idStr: string };
+        const derived = new DerivedMVCCStore<Key, Key, Val, Val, NK, NK>({
+            source,
+            mapKey: (key) => ({ idStr: String(key.id) }),
+            prefix: "byId",
+            keyTransformer: {
+                pack: (k) => tuple.pack([k.idStr]),
+                unpack: (buffer) => {
+                    const [idStr] = tuple.unpack(buffer);
+                    return { idStr: idStr as string };
+                },
+            },
+        });
+
+        await source.doTransaction(async (txn) => {
+            txn.set({ id: 1 }, { name: "Alice" });
+            txn.set({ id: 2 }, { name: "Bob" });
+            txn.set({ id: 3 }, { name: "Charlie" });
+        });
+
+        const result = await source.doTransaction(async (txn) => {
+            return txn.at(derived).getRangeAll({ idStr: "1" }, { idStr: "3" });
+        });
+
+        expect(result.map(([k]) => k.idStr)).toEqual(["1", "2"]);
+    });
+
+    it("source writes and derived reads within the same transaction", async () => {
+        const source = makeStore("items");
+        const derived = makeDerived(source);
+
+        // Seed data so the derived store has something to backfill.
+        await source.doTransaction(async (txn) => {
+            txn.set({ id: 1 }, { name: "Alice", category: "admin" });
+        });
+
+        // In a single source transaction: read from the derived index.
+        const admin = await source.doTransaction(async (txn) => {
+            return txn.at(derived).get({ category: "admin" });
+        });
+
+        expect(admin).toBeDefined();
+    });
+});

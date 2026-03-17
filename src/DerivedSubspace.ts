@@ -1,7 +1,8 @@
 import { MVCCStore } from "./MVCCStore";
-import { Transaction } from "./Transaction";
+import Subspace from "./subspace";
 import {
     TOMBSTONE,
+    type ITransaction,
     type Tombstone,
     type TransactionOptions,
     type Transformer,
@@ -14,15 +15,15 @@ const EMPTY_BUF = Buffer.alloc(0);
  * A read-only, automatically-maintained secondary index (derived view) over
  * an {@link MVCCStore}.
  *
- * On every commit to the source store the `mapKey` projection is applied and
- * the derived key is written into this store's own `versionMap` with an
- * empty buffer as the value.  Reads go through the normal MVCC transaction
- * path, so consumers get snapshot isolation, conflict detection, etc. for
- * free.
+ * Unlike the previous implementation this is a **Subspace**, not a store.
+ * Derived entries are written directly into the **source** store's
+ * `versionMap` (namespaced by this subspace's prefix), so
+ * `txn.at(derivedStore)` inside a source transaction sees the index
+ * entries without any cross-store plumbing.
  *
  * The value-input type parameter is fixed to `never` so that `set()` is
- * uncallable at compile time.  A runtime guard in {@link doTransaction} also
- * prevents any writes that sneak past the type system (e.g. `clear`).
+ * uncallable at compile time.  A runtime guard in {@link doTransaction}
+ * also prevents any writes that sneak past the type system (e.g. `clear`).
  *
  * @typeParam Kin   - Source store key-in type.
  * @typeParam KOut  - Source store key-out type.
@@ -38,7 +39,7 @@ export class DerivedMVCCStore<
     VOut,
     FKIn,
     FKOut extends FKIn,
-> extends MVCCStore<FKIn, FKOut, never, unknown> {
+> extends Subspace<FKIn, FKOut, never, unknown> {
     private readonly _source: MVCCStore<Kin, KOut, Vin, VOut>;
     private readonly _mapKey: (key: KOut, value: VOut) => FKIn;
 
@@ -51,7 +52,7 @@ export class DerivedMVCCStore<
         /** Optional prefix for the derived key space. */
         prefix?: string;
     }) {
-        super({ keyTransformer: args.keyTransformer, prefix: args.prefix });
+        super(args.keyTransformer, args.prefix);
 
         this._source = args.source;
         this._mapKey = args.mapKey;
@@ -60,14 +61,14 @@ export class DerivedMVCCStore<
         this._backfill();
 
         // Register a post-commit hook so future source writes are
-        // projected into this derived store automatically.
+        // projected into the source's versionMap under our prefix.
         this._source.onCommit((writes, commitVersion) => {
             this._handleSourceCommit(writes, commitVersion);
         });
     }
 
     // -----------------------------------------------------------------------
-    // Read-only enforcement
+    // Public API
     // -----------------------------------------------------------------------
 
     /** Values are always empty buffers — return an empty object. */
@@ -75,22 +76,41 @@ export class DerivedMVCCStore<
         return {};
     }
 
+    /** Current commit version — delegates to the source store. */
+    get version(): number {
+        return this._source.version;
+    }
+
     /**
-     * Overridden to enforce read-only semantics.  The `never` value-input
-     * type makes `set()` uncallable, but `clear()` can still be invoked at
-     * runtime.  This guard catches any such attempt.
+     * Execute a read-only transaction against the derived index.
+     *
+     * Internally delegates to the source store's `doTransaction` and
+     * scopes the callback through `txn.at(this)`, so reads resolve from
+     * the source's `versionMap` where derived entries are stored.
+     *
+     * Any writes attempted through the callback will throw.
      */
-    override async doTransaction<R>(
-        callback: (txn: Transaction<FKIn, FKOut, never, unknown>) => Promise<R>,
+    async doTransaction<R>(
+        callback: (txn: ITransaction<FKIn, FKOut, never, unknown>) => Promise<R>,
         options?: TransactionOptions,
     ): Promise<R> {
-        return super.doTransaction(async (txn) => {
-            const result = await callback(txn);
-            if (txn.writeBuffer.size > 0) {
+        return this._source.doTransaction(async (txn) => {
+            const scopedTxn = txn.at(this);
+            const sizeBefore = txn.writeBuffer.size;
+            const result = await callback(scopedTxn);
+            if (txn.writeBuffer.size > sizeBefore) {
                 throw new Error("DerivedMVCCStore is read-only");
             }
             return result;
         }, options);
+    }
+
+    /** Alias for {@link doTransaction}. */
+    doTn<R>(
+        callback: (txn: ITransaction<FKIn, FKOut, never, unknown>) => Promise<R>,
+        options?: TransactionOptions,
+    ): Promise<R> {
+        return this.doTransaction(callback, options);
     }
 
     // -----------------------------------------------------------------------
@@ -98,8 +118,8 @@ export class DerivedMVCCStore<
     // -----------------------------------------------------------------------
 
     /**
-     * Populate the derived versionMap from the source store's current state.
-     * Called once during construction.
+     * Populate the source's versionMap with derived entries from the
+     * source store's current state.  Called once during construction.
      */
     private _backfill(): void {
         for (const [serialisedKey, entries] of this._source.versionMap) {
@@ -116,16 +136,8 @@ export class DerivedMVCCStore<
             const derivedKey = this._mapKey(srcKey, srcValue);
             const derivedKeyHex = this._derivedKeyHex(derivedKey);
 
-            let dEntries = this.versionMap.get(derivedKeyHex);
-            if (!dEntries) {
-                dEntries = [];
-                this.versionMap.set(derivedKeyHex, dEntries);
-            }
-            dEntries.push({ version: latest.version, value: EMPTY_BUF });
+            this._writeEntry(derivedKeyHex, EMPTY_BUF, latest.version);
         }
-
-        // Align our version counter with the source.
-        this.currentVersion = this._source.version;
     }
 
     // -----------------------------------------------------------------------
@@ -134,14 +146,13 @@ export class DerivedMVCCStore<
 
     /**
      * Called synchronously by the source store after each commit.
-     * Projects the source writes into this derived store's `versionMap`.
+     * Projects the source writes into the source's `versionMap` under
+     * this subspace's prefix.
      */
     private _handleSourceCommit(
         writes: ReadonlyMap<string, string | Buffer | Tombstone>,
         commitVersion: number,
     ): void {
-        this.currentVersion = commitVersion;
-
         for (const [serialisedKey, value] of writes) {
             // Skip keys that don't belong to the source subspace.
             if (!this._source.contains(serialisedKey)) continue;
@@ -246,17 +257,18 @@ export class DerivedMVCCStore<
     }
 
     /**
-     * Low-level helper — write a single entry into this store's versionMap.
+     * Low-level helper — write a single entry into the source store's
+     * versionMap (under this subspace's prefix).
      */
     private _writeEntry(
         derivedKeyHex: string,
         value: string | Buffer | Tombstone,
         version: number,
     ): void {
-        let entries = this.versionMap.get(derivedKeyHex);
+        let entries = this._source.versionMap.get(derivedKeyHex);
         if (!entries) {
             entries = [];
-            this.versionMap.set(derivedKeyHex, entries);
+            this._source.versionMap.set(derivedKeyHex, entries);
         }
         entries.push({ version, value });
     }
