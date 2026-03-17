@@ -45,7 +45,7 @@ function strincHex(hex: string): string {
  *
  * All reads observe the store as of `readVersion`.  Writes are buffered
  * locally and only applied to the store during the commit phase (handled by
- * `MVCCStore`).
+ * `Store`).
  *
  * Inspired by FoundationDB's `Transaction` — callers interact with `get`,
  * `set`, and `clear` inside a `doTransaction` callback.
@@ -316,7 +316,7 @@ export class Transaction<Kin, KOut, Vin, VOut> implements ITransaction<Kin, KOut
     }
 
     // ---------------------------------------------------------------------------
-    // Internal — exposed for the commit phase in MVCCStore
+    // Internal — exposed for the commit phase in Store
     // ---------------------------------------------------------------------------
 
     /** @internal */

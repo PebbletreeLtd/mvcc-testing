@@ -1,16 +1,16 @@
-import * as store from "./MVCCStore";
+import * as store from "./Store";
 import { Transaction } from "./Transaction";
-import { DerivedMVCCStore as _DerivedMVCCStore } from "./DerivedMVCCStore";
+import { DerivedSubspace as _DerivedSubspace } from "./DerivedSubspace";
 import _Subspace from "./subspace";
 
 import * as types from "./types";
 
 export namespace MVCCCore {
-    export const MVCCStore = store.MVCCStore;
-    export type MVCCStore<Kin, KOut, Vin, VOut> = store.MVCCStore<Kin, KOut, Vin, VOut>;
+    export const Store = store.Store;
+    export type Store<Kin, KOut, Vin, VOut> = store.Store<Kin, KOut, Vin, VOut>;
 
-    export const DerivedMVCCStore = _DerivedMVCCStore;
-    export type DerivedMVCCStore<Kin, KOut, Vin, VOut, FKIn, FKOut extends FKIn> = _DerivedMVCCStore<Kin, KOut, Vin, VOut, FKIn, FKOut>;
+    export const DerivedSubspace = _DerivedSubspace;
+    export type DerivedSubspace<Kin, KOut, Vin, VOut, FKIn, FKOut extends FKIn> = _DerivedSubspace<Kin, KOut, Vin, VOut, FKIn, FKOut>;
 
     export const Subspace = _Subspace;
     export type Subspace<KI, KO, VI, VO> = _Subspace<KI, KO, VI, VO>;

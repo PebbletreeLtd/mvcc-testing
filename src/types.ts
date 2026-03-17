@@ -20,7 +20,7 @@ export interface VersionedEntry {
 }
 
 /**
- * Options accepted by `MVCCStore.doTransaction`.
+ * Options accepted by `Store.doTransaction`.
  */
 export interface TransactionOptions {
     /**

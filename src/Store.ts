@@ -26,7 +26,7 @@ const DEFAULT_MAX_RETRIES = 5;
  * Usage mirrors the FoundationDB pattern:
  *
  * ```ts
- * const store = new MVCCStore<MyKey, MyVal>();
+ * const store = new Store<MyKey, MyVal>();
  *
  * const result = await store.doTransaction(async (txn) => {
  *   const val = txn.get({ id: 1 });
@@ -38,7 +38,7 @@ const DEFAULT_MAX_RETRIES = 5;
  * @typeParam K - Key type (must be JSON-serialisable).
  * @typeParam V - Value type.
  */
-export class MVCCStore<Kin, KOut, Vin, VOut> extends Subspace<Kin, KOut, Vin, VOut> {
+export class Store<Kin, KOut, Vin, VOut> extends Subspace<Kin, KOut, Vin, VOut> {
     constructor(args: { keyTransformer: Transformer<Kin, KOut>, prefix?: string }) {
         super(args.keyTransformer, args.prefix)
     }

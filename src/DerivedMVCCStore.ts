@@ -1,4 +1,4 @@
-import { Store } from "./Store";
+import { MVCCStore } from "./MVCCStore";
 import Subspace from "./subspace";
 import {
     TOMBSTONE,
@@ -13,7 +13,7 @@ const EMPTY_BUF = Buffer.alloc(0);
 
 /**
  * A read-only, automatically-maintained secondary index (derived view) over
- * an {@link Store}.
+ * an {@link MVCCStore}.
  *
  * Unlike the previous implementation this is a **Subspace**, not a store.
  * Derived entries are written directly into the **source** store's
@@ -32,7 +32,7 @@ const EMPTY_BUF = Buffer.alloc(0);
  * @typeParam FKIn  - Derived (index) key-in type.
  * @typeParam FKOut - Derived (index) key-out type (must extend FKIn).
  */
-export class DerivedSubspace<
+export class DerivedMVCCStore<
     Kin,
     KOut,
     Vin,
@@ -40,11 +40,11 @@ export class DerivedSubspace<
     FKIn,
     FKOut extends FKIn,
 > extends Subspace<FKIn, FKOut, never, unknown> {
-    private readonly _source: Store<Kin, KOut, Vin, VOut>;
+    private readonly _source: MVCCStore<Kin, KOut, Vin, VOut>;
     private readonly _mapKey: (key: KOut, value: VOut) => FKIn;
 
     constructor(args: {
-        source: Store<Kin, KOut, Vin, VOut>;
+        source: MVCCStore<Kin, KOut, Vin, VOut>;
         /** Project a source key/value pair into the derived key. */
         mapKey: (key: KOut, value: VOut) => FKIn;
         /** Transformer for the derived key type. */
@@ -99,7 +99,7 @@ export class DerivedSubspace<
             const sizeBefore = txn.writeBuffer.size;
             const result = await callback(scopedTxn);
             if (txn.writeBuffer.size > sizeBefore) {
-                throw new Error("DerivedSubspace is read-only");
+                throw new Error("DerivedMVCCStore is read-only");
             }
             return result;
         }, options);
