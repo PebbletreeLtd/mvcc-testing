@@ -118,31 +118,31 @@ export interface RangeOptions {
  * `ITransaction` works with either implementation.
  */
 export interface ITransaction<Kin, KOut, Vin, VOut> {
-    get(key: Kin): VOut | undefined | Promise<VOut | undefined>;
-    set(key: Kin, value: Vin): void;
-    clear(key: Kin): void;
-    getRangeAll(
+    get: (key: Kin) => VOut | undefined | Promise<VOut | undefined>;
+    set: (key: Kin, value: Vin) => void;
+    clear: (key: Kin) => void;
+    getRangeAll: (
         start: Kin,
         end: Kin,
         opts?: RangeOptions,
-    ): [KOut, VOut][] | Promise<[KOut, VOut][]>;
-    getRangeAllStartsWith(
+    ) => [KOut, VOut][] | Promise<[KOut, VOut][]>;
+    getRangeAllStartsWith: (
         prefix: Kin,
         opts?: RangeOptions,
-    ): [KOut, VOut][] | Promise<[KOut, VOut][]>;
-    getRange(
+    ) => [KOut, VOut][] | Promise<[KOut, VOut][]>;
+    getRange: (
         start: Kin,
         end: Kin,
         opts?: RangeOptions,
-    ): AsyncGenerator<[KOut, VOut]>;
-    getRangeStartsWith(
+    ) => AsyncGenerator<[KOut, VOut]>;
+    getRangeStartsWith: (
         prefix: Kin,
         opts?: RangeOptions,
-    ): AsyncGenerator<[KOut, VOut]>;
-    at<SubKeyIn, SubKeyOut, SubValIn, SubValOut>(
+    ) => AsyncGenerator<[KOut, VOut]>;
+    at: <SubKeyIn, SubKeyOut, SubValIn, SubValOut>(
         subspace: Subspace<SubKeyIn, SubKeyOut, SubValIn, SubValOut>,
-    ): ITransaction<SubKeyIn, SubKeyOut, SubValIn, SubValOut>;
-    snapshot(): ITransaction<Kin, KOut, Vin, VOut>;
+    ) => ITransaction<SubKeyIn, SubKeyOut, SubValIn, SubValOut>;
+    snapshot: () => ITransaction<Kin, KOut, Vin, VOut>;
 }
 
 
