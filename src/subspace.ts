@@ -4,13 +4,13 @@
 // encode and decode keys and values.
 
 import * as tuple from "fdb-tuple"
-import { Transformer, VersionedEntry } from "./types"
+import { ISubspace, Transformer, VersionedEntry } from "./types"
 import { OrderedMap } from "./OrderedMap"
 
 // Template parameters refer to the types of the allowed key and values you pass
 // in to the database (eg in a set(keyin, valin) call) and the types of keys and
 // values returned. KeyIn == KeyOut and ValIn == ValOut in almost all cases.
-export default class Subspace<KeyIn, KeyOut, ValIn, ValOut> {
+export default class Subspace<KeyIn, KeyOut, ValIn, ValOut> implements ISubspace<KeyIn, KeyOut, ValIn, ValOut> {
     keyXf: Transformer<KeyIn, KeyOut>
     readonly versionMap?: OrderedMap<string, VersionedEntry[]>
 
@@ -71,7 +71,7 @@ export default class Subspace<KeyIn, KeyOut, ValIn, ValOut> {
     unpackValue(val: Buffer): ValOut {
         return JSON.parse(val.toString()) as ValOut
     }
-    withKeyEncoding<NewKeyIn, NewKeyOut>(keyXf: Transformer<NewKeyIn, NewKeyOut>): Subspace<NewKeyIn, NewKeyOut, ValIn, ValOut> {
+    withKeyEncoding<NewKeyIn, NewKeyOut>(keyXf: Transformer<NewKeyIn, NewKeyOut>): ISubspace<NewKeyIn, NewKeyOut, ValIn, ValOut> {
         return new Subspace(keyXf, this.prefix)
     }
 }

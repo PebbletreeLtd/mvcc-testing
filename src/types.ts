@@ -1,5 +1,4 @@
 import { OrderedMap } from "./OrderedMap";
-import type Subspace from "./subspace";
 
 /**
  * Unique sentinel value used to represent a cleared (deleted) key in the
@@ -99,6 +98,29 @@ export interface Transformer<VIN, VOUT> {
     unpack: (buffer: Buffer) => VOUT;
 }
 
+// ---------------------------------------------------------------------------
+// ISubspace — invariant subspace interface
+// ---------------------------------------------------------------------------
+
+/**
+ * An invariant interface for subspaces.
+ *
+ * Uses arrow-function property syntax (like {@link ITransaction}) so that
+ * the type parameters are invariant — you cannot pass off an
+ * `ISubspace<X & Y, …>` as an `ISubspace<X, …>` unless the types are
+ * compatible in both directions.
+ */
+export interface ISubspace<KeyIn, KeyOut, ValIn, ValOut> {
+    readonly prefix?: string;
+    readonly versionMap?: OrderedMap<string, VersionedEntry[]>;
+    contains: (serialisedKeyHex: string) => boolean;
+    packKey: (key: KeyIn) => string | Buffer;
+    unpackKey: (key: Buffer) => KeyOut;
+    packValue: (val: ValIn) => string | Buffer;
+    unpackValue: (val: Buffer) => ValOut;
+    withKeyEncoding: <NewKeyIn, NewKeyOut>(keyXf: Transformer<NewKeyIn, NewKeyOut>) => ISubspace<NewKeyIn, NewKeyOut, ValIn, ValOut>;
+}
+
 export interface RangeOptions {
     limit?: number;
     reverse?: boolean;
@@ -116,6 +138,8 @@ export interface RangeOptions {
  * store they return `T` synchronously.  This interface accommodates both by
  * typing return values as `T | Promise<T>`, so code written against
  * `ITransaction` works with either implementation.
+ * Note that we use arrow functions here to ensure that the methods are invariantly bound to the transaction instance, which is important so
+ * that i cannot pass off an iTransaction<X&Y> as an iTransaction<X> or iTransaction<Y> unless X & Y are compatible.
  */
 export interface ITransaction<Kin, KOut, Vin, VOut> {
     get: (key: Kin) => VOut | undefined | Promise<VOut | undefined>;
@@ -140,7 +164,7 @@ export interface ITransaction<Kin, KOut, Vin, VOut> {
         opts?: RangeOptions,
     ) => AsyncGenerator<[KOut, VOut]>;
     at: <SubKeyIn, SubKeyOut, SubValIn, SubValOut>(
-        subspace: Subspace<SubKeyIn, SubKeyOut, SubValIn, SubValOut>,
+        subspace: ISubspace<SubKeyIn, SubKeyOut, SubValIn, SubValOut>,
     ) => ITransaction<SubKeyIn, SubKeyOut, SubValIn, SubValOut>;
     snapshot: () => ITransaction<Kin, KOut, Vin, VOut>;
 }

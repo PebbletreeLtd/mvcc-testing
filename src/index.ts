@@ -26,6 +26,7 @@ export namespace MVCCCore {
     export type ReadOperation = types.ReadOperation;
     export type RangeOptions = types.RangeOptions;
     export type ITransaction<Kin, KOut, Vin, VOut> = types.ITransaction<Kin, KOut, Vin, VOut>;
+    export type ISubspace<Kin, KOut, Vin, VOut> = types.ISubspace<Kin, KOut, Vin, VOut>;
     export type Transformer<VIN, VOUT> = types.Transformer<VIN, VOUT>;
     export type TransactionFactory<K, V> = types.TransactionFactory<K, V>;
 }

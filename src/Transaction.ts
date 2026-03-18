@@ -1,4 +1,3 @@
-import Subspace from "./subspace";
 import { OrderedMap } from "./OrderedMap";
 import {
     TOMBSTONE,
@@ -7,6 +6,7 @@ import {
     type VersionedEntry,
     type RangeOptions,
     type ITransaction,
+    type ISubspace,
 } from "./types";
 
 /**
@@ -73,7 +73,7 @@ export class Transaction<Kin, KOut, Vin, VOut> implements ITransaction<Kin, KOut
         /** The snapshot version this transaction reads from. */
         private readonly readVersion: number,
 
-        readonly subspace: Subspace<Kin, KOut, Vin, VOut>,
+        readonly subspace: ISubspace<Kin, KOut, Vin, VOut>,
         /**
          * When `true`, reads consult the local write buffer before the store.
          * When `false`, reads always go straight to the versioned snapshot.
@@ -282,7 +282,7 @@ export class Transaction<Kin, KOut, Vin, VOut> implements ITransaction<Kin, KOut
      * Throws if the subspace belongs to a different store (different versionMap).
      */
     at<SubKeyIn, SubKeyOut, SubValIn, SubValOut>(
-        subspace: Subspace<SubKeyIn, SubKeyOut, SubValIn, SubValOut>,
+        subspace: ISubspace<SubKeyIn, SubKeyOut, SubValIn, SubValOut>,
     ): ITransaction<SubKeyIn, SubKeyOut, SubValIn, SubValOut> {
         return new Transaction<SubKeyIn, SubKeyOut, SubValIn, SubValOut>(
             this.readVersion,
