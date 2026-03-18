@@ -510,3 +510,101 @@ describe("DerivedSubspace with partial-key range subspace", () => {
         expect(results[0]![0].job_id).toBe("b");
     });
 });
+
+// ---------------------------------------------------------------------------
+// withKeyEncoding — same pattern using DerivedSubspace.withKeyEncoding()
+// ---------------------------------------------------------------------------
+
+describe("DerivedSubspace with withKeyEncoding()", () => {
+    type JobKey = { job_id: string };
+    type JobVal = { at: number; name: string };
+    type AtKey = { at: number; job_id: string };
+
+    function makeJobStore() {
+        return new Store<JobKey, JobKey, JobVal, JobVal>({
+            prefix: "jobs",
+            keyTransformer: {
+                pack: (k) => tuple.pack([k.job_id]),
+                unpack: (buf) => {
+                    const [job_id] = tuple.unpack(buf);
+                    return { job_id: job_id as string };
+                },
+            },
+        });
+    }
+
+    function makeAtIndex(source: InstanceType<typeof Store<JobKey, JobKey, JobVal, JobVal>>) {
+        return new DerivedSubspace<JobKey, JobKey, JobVal, JobVal, AtKey, AtKey>({
+            source,
+            mapKey: (key, value) => ({ at: value.at, job_id: key.job_id }),
+            prefix: "at",
+            keyTransformer: {
+                pack: (k) => tuple.pack([k.at, k.job_id]),
+                unpack: (buf) => {
+                    const [at, job_id] = tuple.unpack(buf);
+                    return { at: at as number, job_id: job_id as string };
+                },
+            },
+        });
+    }
+
+    it("withKeyEncoding on DerivedSubspace creates a range subspace", async () => {
+        const source = makeJobStore();
+        const atIndex = makeAtIndex(source);
+
+        // Use withKeyEncoding instead of manually creating a new Subspace.
+        const atRange = atIndex.withKeyEncoding<{ at: number }, AtKey>({
+            pack: (k) => tuple.pack([k.at]),
+            unpack: (buf) => atIndex.keyXf.unpack(buf),
+        });
+
+        await source.doTransaction(async (txn) => {
+            txn.set({ job_id: "a" }, { at: 100, name: "Job A" });
+            txn.set({ job_id: "b" }, { at: 200, name: "Job B" });
+            txn.set({ job_id: "c" }, { at: 300, name: "Job C" });
+        });
+
+        const results = await source.doTransaction(async (txn) => {
+            return txn.at(atRange).getRangeAll({ at: 100 }, { at: 250 });
+        });
+
+        const jobIds = results.map(([k]) => k.job_id).sort();
+        expect(jobIds).toEqual(["a", "b"]);
+    });
+
+    it("withKeyEncoding preserves prefix from DerivedSubspace", () => {
+        const source = makeJobStore();
+        const atIndex = makeAtIndex(source);
+
+        const atRange = atIndex.withKeyEncoding<{ at: number }, AtKey>({
+            pack: (k) => tuple.pack([k.at]),
+            unpack: (buf) => atIndex.keyXf.unpack(buf),
+        });
+
+        expect(atRange.prefix).toBe(atIndex.prefix);
+        expect(atRange.prefix).toBe("at");
+    });
+
+    it("getRangeAllStartsWith via withKeyEncoding", async () => {
+        const source = makeJobStore();
+        const atIndex = makeAtIndex(source);
+
+        const atRange = atIndex.withKeyEncoding<{ at: number }, AtKey>({
+            pack: (k) => tuple.pack([k.at]),
+            unpack: (buf) => atIndex.keyXf.unpack(buf),
+        });
+
+        await source.doTransaction(async (txn) => {
+            txn.set({ job_id: "a" }, { at: 100, name: "Job A" });
+            txn.set({ job_id: "b" }, { at: 100, name: "Job B" });
+            txn.set({ job_id: "c" }, { at: 200, name: "Job C" });
+        });
+
+        const results = await source.doTransaction(async (txn) => {
+            return txn.at(atRange).getRangeAllStartsWith({ at: 100 });
+        });
+
+        const jobIds = results.map(([k]) => k.job_id).sort();
+        expect(jobIds).toEqual(["a", "b"]);
+    });
+});

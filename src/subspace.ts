@@ -71,4 +71,7 @@ export default class Subspace<KeyIn, KeyOut, ValIn, ValOut> {
     unpackValue(val: Buffer): ValOut {
         return JSON.parse(val.toString()) as ValOut
     }
+    withKeyEncoding<NewKeyIn, NewKeyOut>(keyXf: Transformer<NewKeyIn, NewKeyOut>): Subspace<NewKeyIn, NewKeyOut, ValIn, ValOut> {
+        return new Subspace(keyXf, this.prefix)
+    }
 }

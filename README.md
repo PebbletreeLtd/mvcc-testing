@@ -64,6 +64,25 @@ Pack a key using the transformer, prepending the prefix bytes if set.
 
 Strip the prefix bytes (if set) and unpack via the transformer. **Throws** if the buffer doesn't start with the expected prefix.
 
+#### `subspace.withKeyEncoding<NewKeyIn, NewKeyOut>(keyXf): Subspace`
+
+Return a new `Subspace` that shares the same **prefix** but uses a different key transformer. Useful for creating partial-key subspaces for range queries — e.g. a subspace that packs only `{ at }` for range bounds but unpacks the full `[at, job_id]` tuple from stored keys.
+
+```ts
+const fullIndex = new Subspace(fullKeyTransformer, "at");
+
+// Partial-key subspace for range queries — same prefix, narrower pack.
+const rangeSubspace = fullIndex.withKeyEncoding({
+  pack: (k: { at: number }) => tuple.pack([k.at]),
+  unpack: (buf) => fullIndex.keyXf.unpack(buf),  // decode the full key
+});
+
+// Use in a transaction to query by range:
+const results = await store.doTransaction(async (txn) => {
+  return txn.at(rangeSubspace).getRangeAll({ at: 100 }, { at: 250 });
+});
+```
+
 ---
 
 ### `Store<Kin, KOut, Vin, VOut>`

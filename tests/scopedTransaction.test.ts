@@ -263,3 +263,87 @@ describe("Transaction.at() — scoped transactions", () => {
         expect(result).toEqual({ item: "Widget", total: 10 });
     });
 });
+
+// ---------------------------------------------------------------------------
+// withKeyEncoding
+// ---------------------------------------------------------------------------
+
+describe("Subspace.withKeyEncoding()", () => {
+    it("creates a new subspace with the same prefix but different key transformer", () => {
+        const original = new Subspace<UserKey, UserKey, UserVal, UserVal>({
+            pack: (key) => tuple.pack([key.userId]),
+            unpack: (buf) => {
+                const [userId] = tuple.unpack(buf);
+                return { userId: userId as number };
+            },
+        }, "users");
+
+        // New subspace that packs a string key instead.
+        const reKeyed = original.withKeyEncoding<string, string>({
+            pack: (k) => tuple.pack([k]),
+            unpack: (buf) => tuple.unpack(buf)[0] as string,
+        });
+
+        expect(reKeyed.prefix).toBe("users");
+        // Pack should use the new transformer.
+        const packed = reKeyed.packKey("hello") as Buffer;
+        // Should start with the same prefix bytes.
+        expect(original.contains(packed.toString("hex"))).toBe(true);
+    });
+
+    it("withKeyEncoding subspace works with txn.at() for range queries", async () => {
+        const store = makeStore();
+        const orders = makeOrderSubspace();
+
+        // Seed some orders.
+        await store.doTransaction(async (txn) => {
+            txn.at(orders).set({ orderId: 1 }, { item: "A", total: 10 });
+            txn.at(orders).set({ orderId: 5 }, { item: "E", total: 50 });
+            txn.at(orders).set({ orderId: 10 }, { item: "J", total: 100 });
+        });
+
+        // Create a partial-key subspace via withKeyEncoding — packs just a
+        // number for the range bound, unpacks the full OrderKey.
+        const orderRange = orders.withKeyEncoding<number, OrderKey>({
+            pack: (n) => tuple.pack([n]),
+            unpack: (buf) => {
+                const [orderId] = tuple.unpack(buf);
+                return { orderId: orderId as number };
+            },
+        });
+
+        const results = await store.doTransaction(async (txn) => {
+            return txn.at(orderRange).getRangeAll(1, 6);
+        });
+
+        expect(results).toHaveLength(2);
+        expect(results[0]![0].orderId).toBe(1);
+        expect(results[1]![0].orderId).toBe(5);
+    });
+
+    it("withKeyEncoding preserves value encoding", async () => {
+        const store = makeStore();
+        const orders = makeOrderSubspace();
+
+        await store.doTransaction(async (txn) => {
+            txn.at(orders).set({ orderId: 42 }, { item: "Widget", total: 99 });
+        });
+
+        // Read back through withKeyEncoding — values should still decode.
+        const orderRange = orders.withKeyEncoding<number, OrderKey>({
+            pack: (n) => tuple.pack([n]),
+            unpack: (buf) => {
+                const [orderId] = tuple.unpack(buf);
+                return { orderId: orderId as number };
+            },
+        });
+
+        const results = await store.doTransaction(async (txn) => {
+            return txn.at(orderRange).getRangeAllStartsWith(42);
+        });
+
+        expect(results).toHaveLength(1);
+        expect(results[0]![0].orderId).toBe(42);
+        expect(results[0]![1]).toEqual({ item: "Widget", total: 99 });
+    });
+});
