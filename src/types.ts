@@ -159,10 +159,6 @@ export interface ITransaction<Kin, KOut, Vin, VOut> {
         end: Kin,
         opts?: RangeOptions,
     ) => AsyncGenerator<[KOut, VOut]>;
-    getRangeStartsWith: (
-        prefix: Kin,
-        opts?: RangeOptions,
-    ) => AsyncGenerator<[KOut, VOut]>;
     at: <SubKeyIn, SubKeyOut, SubValIn, SubValOut>(
         subspace: ISubspace<SubKeyIn, SubKeyOut, SubValIn, SubValOut>,
     ) => ITransaction<SubKeyIn, SubKeyOut, SubValIn, SubValOut>;
